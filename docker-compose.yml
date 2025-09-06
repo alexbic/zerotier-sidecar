@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  zerotier-sidecar:
+    image: alexbic/zerotier-sidecar:latest
+    container_name: zerotier-sidecar
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /opt/zerotier-sidecar:/var/lib/zerotier-one
+    networks:
+      - default
+    env_file:
+      - stack.env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+
+networks:
+  default:
+    name: sidecar_net
