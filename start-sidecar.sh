@@ -309,7 +309,7 @@ if [ "$GATEWAY_MODE" = "true" ]; then
             if is_zerotier_address "$DEST_IP" >/dev/null 2>&1; then
                 echo "✅ Port $EXT_PORT -> $DEST_IP:$DEST_PORT (ZeroTier - external access available)"
             else
-                echo "⚠️  Port $EXT_PORT -> $DEST_IP:$DEST_PORT (Docker - external access not available in gateway mode)"
+                echo "❌ Port $EXT_PORT -> $DEST_IP:$DEST_PORT (Docker - not configured in gateway mode)"
             fi
         fi
     done
@@ -341,9 +341,14 @@ else
         DEST_PORT=${PARTS[2]}
         
         if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
-            echo "✅ Port $EXT_PORT -> $DEST_IP:$DEST_PORT (iptables DNAT)"
+            if is_zerotier_address "$DEST_IP" >/dev/null 2>&1; then
+                echo "❌ Port $EXT_PORT -> $DEST_IP:$DEST_PORT (ZeroTier - not configured in backend mode)"
+            else
+                echo "✅ Port $EXT_PORT -> $DEST_IP:$DEST_PORT (iptables DNAT)"
+            fi
         fi
     done
+    echo "💡 Note: Use GATEWAY_MODE=hybrid for ZeroTier destinations"
 fi
 echo "============================"
 
