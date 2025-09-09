@@ -157,6 +157,14 @@ if [ -z "$ZT_IP" ]; then
     exit 1
 fi
 
+# Разрешаем трафик на ZeroTier интерфейсе для hybrid/gateway режимов
+if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
+    echo "Adding ZeroTier interface rules for $GATEWAY_MODE mode..."
+    iptables -I INPUT -i "$ZT_IF" -j ACCEPT
+    iptables -I FORWARD -i "$ZT_IF" -o "$ZT_IF" -j ACCEPT
+    echo "✓ ZeroTier internal traffic allowed"
+fi
+
 # Включаем IP форвардинг (ОРИГИНАЛЬНАЯ ЛОГИКА)
 echo "Enabling IP forwarding..."
 sysctl -w net.ipv4.ip_forward=1
@@ -236,10 +244,21 @@ if [ -n "$PORT_FORWARD" ]; then
                 if [ "$GATEWAY_MODE" = "false" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
                     # Backend режим: DNAT в Docker сеть
                     iptables -t nat -A PREROUTING -i "$ZT_IF" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
-                    iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
-                    iptables -A FORWARD -i "$ZT_IF" -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
-                    iptables -A FORWARD -i eth0 -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
-                    echo "✓ iptables DNAT configured for local address"
+                    
+                    # Определяем правильный интерфейс для назначения
+                    DEST_INTERFACE=$(get_interface_for_ip "$DEST_IP")
+                    if [ -n "$DEST_INTERFACE" ]; then
+                        iptables -t nat -A POSTROUTING -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
+                        iptables -A FORWARD -i "$ZT_IF" -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
+                        iptables -A FORWARD -i "$DEST_INTERFACE" -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
+                        echo "✓ iptables DNAT configured for $DEST_IP via interface $DEST_INTERFACE"
+                    else
+                        echo "⚠️  Could not determine interface for $DEST_IP, using eth0"
+                        iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
+                        iptables -A FORWARD -i "$ZT_IF" -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
+                        iptables -A FORWARD -i eth0 -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
+                        echo "✓ iptables DNAT configured for $DEST_IP via default eth0"
+                    fi
                 fi
             fi
             
@@ -329,4 +348,4 @@ fi
 echo "============================"
 
 # Держим контейнер запущенным (ОРИГИНАЛЬНАЯ ЛОГИКА)
-tail -f /dev/null
+tail -f /dev/nu
