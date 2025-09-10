@@ -1,11 +1,12 @@
 #!/bin/bash
 set -e
 
-# Переменные окружения (упрощенные)
+# Переменные окружения
 ZT_NETWORK=${ZT_NETWORK:-""}
 PORT_FORWARD=${PORT_FORWARD:-""}
 GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
+FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
 
 # Исправляем DNS для установки пакетов
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
@@ -14,6 +15,9 @@ echo "Starting ZeroTier sidecar..."
 echo "Mode: $GATEWAY_MODE"
 echo "ZeroTier network: $ZT_NETWORK"
 echo "Port forwarding: $PORT_FORWARD"
+if [ -n "$FORCE_ZEROTIER_ROUTES" ]; then
+    echo "Custom routes: $FORCE_ZEROTIER_ROUTES"
+fi
 
 # Функция настройки firewall
 setup_firewall() {
@@ -39,7 +43,7 @@ setup_firewall() {
     # Всегда разрешаем ZeroTier UDP
     iptables -A INPUT -p udp --dport 9993 -j ACCEPT
     
-    # Защита от сканирования портов - ВСЕГДА
+    # Защита от сканирования портов
     iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP
     iptables -A INPUT -p tcp --tcp-flags ALL ALL -j DROP
     iptables -A INPUT -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
@@ -51,42 +55,135 @@ setup_firewall() {
 # Функция для получения интерфейса по которому идет трафик к IP
 get_interface_for_ip() {
     local dest_ip="$1"
-    
-    # Получаем интерфейс через который пойдет трафик к этому IP
     local route_info
     route_info=$(ip route get "$dest_ip" 2>/dev/null)
     
     if [ $? -eq 0 ]; then
-        # Извлекаем интерфейс из вывода ip route get
         local interface
         interface=$(echo "$route_info" | grep -o 'dev [^ ]*' | awk '{print $2}')
         echo "$interface"
     else
-        # Если маршрут не найден, возвращаем пустую строку
         echo ""
     fi
 }
 
-# Функция для автоматического определения типа сети по интерфейсу
+# Функция для получения активных Docker сетей
+get_docker_networks() {
+    # Получаем маршруты и фильтруем Docker сети
+    ip route show | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+' | while read -r route; do
+        network=$(echo "$route" | awk '{print $1}')
+        interface=$(echo "$route" | awk '{print $3}')
+        
+        # Исключаем ZeroTier интерфейс и localhost
+        if [ "$interface" != "$ZT_IF" ] && [ "$interface" != "lo" ] && [[ "$interface" =~ ^(eth|br-|docker) ]]; then
+            echo "$network"
+        fi
+    done | sort -u
+}
+
+# Функция добавления правил для Docker сетей
+add_docker_network_rules() {
+    local port="$1"
+    
+    get_docker_networks | while read -r network; do
+        if [ -n "$network" ]; then
+            echo "Adding Docker network rule: $network -> port $port"
+            iptables -I INPUT -s "$network" -p tcp --dport "$port" -j ACCEPT
+        fi
+    done
+}
+
+# Функция проверки попадания IP в сеть
+ip_in_network() {
+    local ip="$1"
+    local network="$2"
+    
+    # Проверка для /24 сетей
+    if [[ "$network" == *"/24" ]]; then
+        local network_base=${network%.*}
+        local ip_base=${ip%.*}
+        if [ "$network_base" = "$ip_base" ]; then
+            return 0
+        fi
+    fi
+    
+    # Проверка для /16 сетей  
+    if [[ "$network" == *"/16" ]]; then
+        local network_base=${network%.*.*}
+        local ip_base=${ip%.*.*}
+        if [ "$network_base" = "$ip_base" ]; then
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+# Функция для определения типа сети
 is_zerotier_address() {
     local dest_ip="$1"
-    local interface
     
+    # ШАГ 1: Стандартная проверка интерфейса
+    local interface
     interface=$(get_interface_for_ip "$dest_ip")
     
     echo "Checking route for $dest_ip -> interface: $interface"
     
-    # Если интерфейс начинается с "zt" - это ZeroTier
+    # Определяем тип по интерфейсу
+    local is_zt_by_interface=false
     if [[ "$interface" =~ ^zt ]]; then
-        echo "Detected ZeroTier address: $dest_ip (interface: $interface)"
-        return 0  # true - ZeroTier адрес
+        is_zt_by_interface=true
+        echo "Interface detection: ZeroTier address $dest_ip (interface: $interface)"
     else
-        echo "Detected local/Docker address: $dest_ip (interface: $interface)"
-        return 1  # false - Docker или другая локальная сеть
+        echo "Interface detection: local/Docker address $dest_ip (interface: $interface)"
+    fi
+    
+    # ШАГ 2: Кастомные маршруты переопределяют результат
+    if [ -n "$FORCE_ZEROTIER_ROUTES" ]; then
+        IFS=',' read -ra ROUTES <<< "$FORCE_ZEROTIER_ROUTES"
+        for route_rule in "${ROUTES[@]}"; do
+            IFS=':' read -ra ROUTE_PARTS <<< "$route_rule"
+            local network=${ROUTE_PARTS[0]}
+            
+            if [ -n "$network" ]; then
+                if ip_in_network "$dest_ip" "$network"; then
+                    echo "Custom route override: $dest_ip -> ZeroTier (network: $network)"
+                    return 0
+                fi
+            fi
+        done
+    fi
+    
+    # ШАГ 3: Возвращаем результат стандартной проверки
+    if [ "$is_zt_by_interface" = true ]; then
+        echo "Final result: ZeroTier address"
+        return 0
+    else
+        echo "Final result: Docker/local address"
+        return 1
     fi
 }
 
-# Проверяем интернет подключение (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Функция применения кастомных маршрутов
+apply_custom_routes() {
+    if [ -n "$FORCE_ZEROTIER_ROUTES" ]; then
+        echo "Applying custom ZeroTier routes..."
+        IFS=',' read -ra ROUTES <<< "$FORCE_ZEROTIER_ROUTES"
+        for route_rule in "${ROUTES[@]}"; do
+            IFS=':' read -ra ROUTE_PARTS <<< "$route_rule"
+            local network=${ROUTE_PARTS[0]}
+            local gateway=${ROUTE_PARTS[1]}
+            
+            if [ -n "$network" ] && [ -n "$gateway" ]; then
+                echo "Adding route: $network via $gateway dev $ZT_IF"
+                ip route add "$network" via "$gateway" dev "$ZT_IF" 2>/dev/null || true
+            fi
+        done
+        echo "✓ Custom routes applied"
+    fi
+}
+
+# Проверяем интернет подключение
 echo "Testing internet connectivity..."
 if ping -c 3 8.8.8.8 >/dev/null 2>&1; then
     echo "✓ Internet connectivity OK"
@@ -95,17 +192,17 @@ else
     ip route
 fi
 
-# Запускаем ZeroTier (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Запускаем ZeroTier
 echo "Starting ZeroTier daemon..."
 zerotier-one &
 
-# Ждём появления zerotier-cli (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Ждём появления zerotier-cli
 echo "Waiting for ZeroTier CLI..."
 until command -v zerotier-cli >/dev/null 2>&1; do
     sleep 1
 done
 
-# Ждём готовности демона (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Ждём готовности демона
 echo "Waiting for ZeroTier daemon..."
 attempt=0
 while [ $attempt -lt 30 ]; do
@@ -117,18 +214,17 @@ while [ $attempt -lt 30 ]; do
     attempt=$((attempt+1))
 done
 
-# Присоединяемся к сети (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Присоединяемся к сети
 if [ -n "$ZT_NETWORK" ]; then
     echo "Joining ZeroTier network: $ZT_NETWORK"
     zerotier-cli join $ZT_NETWORK
     
-    # Показываем результат
     sleep 2
     echo "Network status:"
     zerotier-cli listnetworks
 fi
 
-# Ждём появления интерфейса (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Ждём появления интерфейса
 echo "Waiting for ZeroTier interface..."
 while true; do
     ZT_IF=$(ip -o link | awk -F': ' '/zt/ {print $2; exit}')
@@ -139,7 +235,7 @@ while true; do
     sleep 1
 done
 
-# Ждём присвоения IP (УЛУЧШЕННАЯ ВЕРСИЯ с таймаутом)
+# Ждём присвоения IP
 echo "Waiting for IP assignment..."
 attempt=0
 while [ $attempt -lt 60 ]; do
@@ -165,14 +261,17 @@ if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
     echo "✓ ZeroTier internal traffic allowed"
 fi
 
-# Включаем IP форвардинг (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Включаем IP форвардинг
 echo "Enabling IP forwarding..."
 sysctl -w net.ipv4.ip_forward=1
 
 # Настраиваем firewall
 setup_firewall
 
-# Настройка правил для проброса портов (ИСПРАВЛЕННАЯ ЛОГИКА)
+# Применяем кастомные маршруты
+apply_custom_routes
+
+# Настройка правил для проброса портов
 if [ -n "$PORT_FORWARD" ]; then
     echo "Setting up port forwarding..."
     
@@ -189,12 +288,10 @@ if [ -n "$PORT_FORWARD" ]; then
             # Открываем порты в зависимости от режима
             case $GATEWAY_MODE in
                 "false")
-                    # Backend: только на ZeroTier интерфейсе
                     echo "Backend mode: opening port $EXT_PORT on ZeroTier interface only"
                     iptables -A INPUT -i "$ZT_IF" -p tcp --dport $EXT_PORT -j ACCEPT
                     ;;
                 "true")
-                    # Gateway: только снаружи
                     echo "Gateway mode: opening port $EXT_PORT for external access"
                     if [ "$ALLOWED_SOURCES" != "any" ]; then
                         IFS=',' read -ra SOURCES <<< "$ALLOWED_SOURCES"
@@ -204,11 +301,9 @@ if [ -n "$PORT_FORWARD" ]; then
                     else
                         iptables -A INPUT -p tcp --dport $EXT_PORT -j ACCEPT
                     fi
-                    # Разрешаем трафик от Docker сети для межконтейнерного взаимодействия
-                    iptables -I INPUT -s 172.16.0.0/12 -p tcp --dport $EXT_PORT -j ACCEPT
+                    add_docker_network_rules "$EXT_PORT"
                     ;;
                 "hybrid")
-                    # Гибрид: и снаружи, и на ZeroTier
                     echo "Hybrid mode: opening port $EXT_PORT on all interfaces"
                     if [ "$ALLOWED_SOURCES" != "any" ]; then
                         IFS=',' read -ra SOURCES <<< "$ALLOWED_SOURCES"
@@ -218,10 +313,8 @@ if [ -n "$PORT_FORWARD" ]; then
                     else
                         iptables -A INPUT -p tcp --dport $EXT_PORT -j ACCEPT
                     fi
-                    # Также разрешаем на ZeroTier интерфейсе
                     iptables -A INPUT -i "$ZT_IF" -p tcp --dport $EXT_PORT -j ACCEPT
-                    # Разрешаем трафик от Docker сети
-                    iptables -I INPUT -s 172.16.0.0/12 -p tcp --dport $EXT_PORT -j ACCEPT
+                    add_docker_network_rules "$EXT_PORT"
                     ;;
                 *)
                     echo "Invalid GATEWAY_MODE: $GATEWAY_MODE. Use: false, true, or hybrid"
@@ -229,9 +322,8 @@ if [ -n "$PORT_FORWARD" ]; then
                     ;;
             esac
             
-            # Выбираем способ перенаправления в зависимости от типа адреса назначения
+            # Выбираем способ перенаправления
             if is_zerotier_address "$DEST_IP"; then
-                # Для ZeroTier адресов используем socat прокси
                 echo "Destination is ZeroTier address, using socat proxy"
                 if [ "$GATEWAY_MODE" = "true" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
                     echo "Starting socat proxy: $EXT_PORT -> $DEST_IP:$DEST_PORT"
@@ -239,13 +331,10 @@ if [ -n "$PORT_FORWARD" ]; then
                     echo "✓ Socat proxy started for port $EXT_PORT"
                 fi
             else
-                # Для локальных Docker адресов используем iptables DNAT
                 echo "Destination is local Docker address, using iptables DNAT"
                 if [ "$GATEWAY_MODE" = "false" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
-                    # Backend режим: DNAT в Docker сеть
                     iptables -t nat -A PREROUTING -i "$ZT_IF" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
                     
-                    # Определяем правильный интерфейс для назначения
                     DEST_INTERFACE=$(get_interface_for_ip "$DEST_IP")
                     if [ -n "$DEST_INTERFACE" ]; then
                         iptables -t nat -A POSTROUTING -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
@@ -352,5 +441,5 @@ else
 fi
 echo "============================"
 
-# Держим контейнер запущенным (ОРИГИНАЛЬНАЯ ЛОГИКА)
+# Держим контейнер запущенным
 tail -f /dev/null
