@@ -1,4 +1,4 @@
-# 🌐 ZeroTier Docker Sidecar
+# 🌐 ZeroTier Sidecar Core
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/alexbic/zerotier-sidecar)](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 [![Docker Image Size](https://img.shields.io/docker/image-size/alexbic/zerotier-sidecar/latest)](https://hub.docker.com/r/alexbic/zerotier-sidecar)
