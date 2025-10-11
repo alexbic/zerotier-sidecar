@@ -85,16 +85,27 @@ if [ -n "$PORT_FORWARD" ]; then
     for forward in "${FORWARDS[@]}"; do
         IFS=':' read -ra PARTS <<< "$forward"
         EXT_PORT=${PARTS[0]}
-        DEST_IP=${PARTS[1]}
+        DEST=${PARTS[1]}
         DEST_PORT=${PARTS[2]}
 
-        if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
+        if [ -n "$EXT_PORT" ] && [ -n "$DEST" ] && [ -n "$DEST_PORT" ]; then
+            # Если указано имя контейнера, преобразуем в IP через ping
+            if [[ "$DEST" =~ [a-zA-Z] ]]; then
+                DEST_IP=$(ping -c1 "$DEST" 2>/dev/null | head -1 | awk -F'[()]' '{print $2}')
+                if [ -z "$DEST_IP" ]; then
+                    echo "✗ Cannot resolve container name: $DEST"
+                    continue
+                fi
+            else
+                DEST_IP="$DEST"
+            fi
+
             echo "Setting up: $EXT_PORT -> $DEST_IP:$DEST_PORT"
             
             # DNAT: перенаправляем входящий трафик с ZeroTier на Docker сеть
             iptables -t nat -A PREROUTING -i "$ZT_IF" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
             
-            # MASQUERADE: маскируем источник при отправке в Docker сеть (ИСПРАВЛЕНО)
+            # MASQUERADE: маскируем источник при отправке в Docker сеть
             iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
             
             # FORWARD: разрешаем прохождение трафика
