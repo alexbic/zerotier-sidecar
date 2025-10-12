@@ -122,6 +122,9 @@ The `PORT_FORWARD` variable uses the format: `EXTERNAL_PORT:DEST_IP:DEST_PORT`
 **Examples**:
 - Single port: `873:172.26.0.3:873`
 - Multiple ports: `873:172.26.0.3:873,22:172.26.0.4:22,80:172.26.0.5:8080`
+- Container name example: `873:my-service:873`
+
+Note: you can also use a Docker container name (or hostname) as the DEST when the sidecar and the target service are attached to the same Docker network.
 
 ## 🔧 Setup Guide
 
