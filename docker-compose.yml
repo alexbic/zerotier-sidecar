@@ -14,9 +14,6 @@ services:
       - default
     env_file:
       - stack.env
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN

@@ -5,6 +5,54 @@ set -e
 ZT_NETWORK=${ZT_NETWORK:-""}
 PORT_FORWARD=${PORT_FORWARD:-""}
 
+# Improved name resolver: uses getent (NSS: /etc/hosts + Docker DNS) then ping as fallback
+resolve_name_to_ip() {
+    local name="$1"
+    local ip=""
+
+    # If already IPv4, return as-is
+    if [[ "$name" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$name"
+        return 0
+    fi
+
+    # Try getent first (uses Docker embedded DNS)
+    if command -v getent >/dev/null 2>&1; then
+        ip=$(getent hosts "$name" | awk '{print $1; exit}' || true)
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    fi
+
+    # Fallback to ping
+    if command -v ping >/dev/null 2>&1; then
+        ip=$(ping -c1 "$name" 2>/dev/null | head -1 | awk -F'[()]' '{print $2}' || true)
+        if [ -n "$ip" ]; then
+            echo "$ip"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# DNS Configuration: Docker manages /etc/resolv.conf automatically with embedded DNS.
+# We only add a public DNS fallback for ZeroTier planet lookups (external DNS queries).
+echo "Configuring DNS..."
+if [ -f /etc/resolv.conf ] && grep -qE '^nameserver' /etc/resolv.conf 2>/dev/null; then
+    echo "Current DNS config:"
+    cat /etc/resolv.conf | grep nameserver
+
+    # Add Google DNS as fallback if not present (for ZeroTier external lookups)
+    if ! grep -q '8.8.8.8' /etc/resolv.conf 2>/dev/null; then
+        echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
+        echo "Added 8.8.8.8 as fallback DNS"
+    fi
+else
+    echo "⚠️  Warning: /etc/resolv.conf is empty or missing"
+fi
+
 echo "Starting ZeroTier sidecar..."
 echo "ZeroTier network: $ZT_NETWORK"
 echo "Port forwarding: $PORT_FORWARD"
@@ -73,14 +121,12 @@ while true; do
     sleep 1
 done
 
-# Включаем IP форвардинг
-echo "Enabling IP forwarding..."
-sysctl -w net.ipv4.ip_forward=1
-
-# Настройка правил для проброса портов
+# Pre-resolve container names BEFORE starting ZeroTier
+# Docker embedded DNS (127.0.0.11) may stop responding after network changes,
+# so we resolve all container names early and cache the IPs
 if [ -n "$PORT_FORWARD" ]; then
-    echo "Setting up port forwarding..."
-    
+    echo "Pre-resolving container names..."
+    NEW_PORT_FORWARD=""
     IFS=',' read -ra FORWARDS <<< "$PORT_FORWARD"
     for forward in "${FORWARDS[@]}"; do
         IFS=':' read -ra PARTS <<< "$forward"
@@ -89,33 +135,80 @@ if [ -n "$PORT_FORWARD" ]; then
         DEST_PORT=${PARTS[2]}
 
         if [ -n "$EXT_PORT" ] && [ -n "$DEST" ] && [ -n "$DEST_PORT" ]; then
-            # Если указано имя контейнера, преобразуем в IP через ping
-            if [[ "$DEST" =~ [a-zA-Z] ]]; then
-                DEST_IP=$(ping -c1 "$DEST" 2>/dev/null | head -1 | awk -F'[()]' '{print $2}')
-                if [ -z "$DEST_IP" ]; then
-                    echo "✗ Cannot resolve container name: $DEST"
-                    continue
+            # Resolve name to IP
+            if DEST_IP=$(resolve_name_to_ip "$DEST"); then
+                if [ "$DEST" != "$DEST_IP" ]; then
+                    echo "  $DEST -> $DEST_IP"
                 fi
+                NEW_PORT_FORWARD+="${EXT_PORT}:${DEST_IP}:${DEST_PORT},"
             else
-                DEST_IP="$DEST"
+                echo "  ⚠️  Cannot resolve: $DEST (skipping)"
             fi
+        fi
+    done
+    PORT_FORWARD=${NEW_PORT_FORWARD%,}
+    echo "Resolved PORT_FORWARD: $PORT_FORWARD"
+fi
 
+# Включаем IP форвардинг
+echo "Enabling IP forwarding..."
+sysctl -w net.ipv4.ip_forward=1
+
+# Настройка правил для проброса портов (now using resolved IPs)
+if [ -n "$PORT_FORWARD" ]; then
+    echo "Setting up port forwarding..."
+
+    IFS=',' read -ra FORWARDS <<< "$PORT_FORWARD"
+    for forward in "${FORWARDS[@]}"; do
+        IFS=':' read -ra PARTS <<< "$forward"
+        EXT_PORT=${PARTS[0]}
+        DEST_IP=${PARTS[1]}
+        DEST_PORT=${PARTS[2]}
+
+        if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
             echo "Setting up: $EXT_PORT -> $DEST_IP:$DEST_PORT"
-            
+
             # DNAT: перенаправляем входящий трафик с ZeroTier на Docker сеть
             iptables -t nat -A PREROUTING -i "$ZT_IF" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
-            
+
             # MASQUERADE: маскируем источник при отправке в Docker сеть
             iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
-            
+
             # FORWARD: разрешаем прохождение трафика
             iptables -A FORWARD -i "$ZT_IF" -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
             iptables -A FORWARD -i eth0 -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
-            
+
             echo "✓ Port forwarding configured"
         fi
     done
 fi
+
+echo ""
+echo "=== DNS Diagnostics ==="
+echo "DNS configuration:"
+cat /etc/resolv.conf | grep nameserver || echo "⚠️  No nameservers found!"
+
+echo ""
+echo "Testing DNS resolution:"
+# Test Docker embedded DNS (if available)
+if grep -q '127.0.0.11' /etc/resolv.conf 2>/dev/null; then
+    echo -n "Docker embedded DNS (127.0.0.11): "
+    if nslookup -timeout=2 google.com 127.0.0.11 >/dev/null 2>&1; then
+        echo "✓ Working"
+    else
+        echo "✗ Not responding"
+    fi
+fi
+
+# Test external DNS
+echo -n "External DNS resolution: "
+if nslookup -timeout=2 google.com >/dev/null 2>&1; then
+    echo "✓ Working"
+else
+    echo "✗ Failed"
+fi
+echo "======================="
+echo ""
 
 echo "=== ZeroTier Sidecar Ready ==="
 echo "ZeroTier IP: $ZT_IP"
