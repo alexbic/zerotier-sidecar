@@ -41,14 +41,19 @@ resolve_name_to_ip() {
 # We only add a public DNS fallback for ZeroTier planet lookups (external DNS queries).
 echo "Configuring DNS..."
 if [ -f /etc/resolv.conf ] && grep -qE '^nameserver' /etc/resolv.conf 2>/dev/null; then
-    echo "Current DNS config:"
+    echo "Docker DNS detected:"
     cat /etc/resolv.conf | grep nameserver
 
     # Add Google DNS as fallback if not present (for ZeroTier external lookups)
     if ! grep -q '8.8.8.8' /etc/resolv.conf 2>/dev/null; then
         echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
-        echo "Added 8.8.8.8 as fallback DNS"
+        echo "✓ Added 8.8.8.8 as fallback DNS"
+    else
+        echo "✓ Fallback DNS 8.8.8.8 already present"
     fi
+
+    echo "Final DNS config:"
+    cat /etc/resolv.conf | grep nameserver
 else
     echo "⚠️  Warning: /etc/resolv.conf is empty or missing"
 fi
@@ -190,19 +195,28 @@ cat /etc/resolv.conf | grep nameserver || echo "⚠️  No nameservers found!"
 
 echo ""
 echo "Testing DNS resolution:"
-# Test Docker embedded DNS (if available)
+
+# Test Docker embedded DNS using getent (more reliable than nslookup)
 if grep -q '127.0.0.11' /etc/resolv.conf 2>/dev/null; then
     echo -n "Docker embedded DNS (127.0.0.11): "
-    if nslookup -timeout=2 google.com 127.0.0.11 >/dev/null 2>&1; then
-        echo "✓ Working"
+    if getent hosts google.com >/dev/null 2>&1; then
+        echo "✓ Working (getent)"
     else
         echo "✗ Not responding"
     fi
 fi
 
-# Test external DNS
-echo -n "External DNS resolution: "
-if nslookup -timeout=2 google.com >/dev/null 2>&1; then
+# Test external DNS using ping (more reliable for connectivity check)
+echo -n "External connectivity: "
+if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    echo "✓ Working"
+else
+    echo "✗ Failed"
+fi
+
+# Test actual DNS resolution
+echo -n "DNS resolution test: "
+if getent hosts google.com >/dev/null 2>&1; then
     echo "✓ Working"
 else
     echo "✗ Failed"
