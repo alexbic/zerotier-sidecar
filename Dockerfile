@@ -7,6 +7,7 @@ RUN apt-get update && \
         iproute2 \
         iptables \
         iputils-ping \
+        dnsutils \
         procps \
         telnet \
         net-tools && \

@@ -45,7 +45,8 @@ if [ -f /etc/resolv.conf ] && grep -qE '^nameserver' /etc/resolv.conf 2>/dev/nul
     cat /etc/resolv.conf | grep nameserver
 
     # Add Google DNS as fallback if not present (for ZeroTier external lookups)
-    if ! grep -q '8.8.8.8' /etc/resolv.conf 2>/dev/null; then
+    # Check for actual nameserver line, not just presence in comments
+    if ! grep -qE '^nameserver.*8\.8\.8\.8' /etc/resolv.conf 2>/dev/null; then
         echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
         echo "✓ Added 8.8.8.8 as fallback DNS"
     else
