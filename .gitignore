@@ -33,3 +33,8 @@ logs/
 # Temporary files
 *.tmp
 *.temp
+
+# Development files
+changes.txt
+*.diff
+*.patch
