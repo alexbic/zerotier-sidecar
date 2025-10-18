@@ -9,12 +9,18 @@
 
 Мощный Docker контейнер, который действует как мост ZeroTier сети, обеспечивая безопасный проброс портов от ZeroTier сетей к Docker контейнерам. Идеально подходит для удаленного доступа к внутренним сервисам через защищенную сетевую mesh ZeroTier.
 
-## 🐳 Docker Hub
+## 🐳 Docker образы
 
-**Готовый к использованию Docker образ**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
+Docker образы доступны на **Docker Hub** и **GitHub Container Registry**:
 
+**Docker Hub**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 ```bash
 docker pull alexbic/zerotier-sidecar:latest
+```
+
+**GitHub Container Registry**: [`ghcr.io/alexbic/zerotier-sidecar`](https://github.com/alexbic/zerotier-sidecar/pkgs/container/zerotier-sidecar)
+```bash
+docker pull ghcr.io/alexbic/zerotier-sidecar:latest
 ```
 
 ## 🚀 Возможности
@@ -48,7 +54,9 @@ version: "3.8"
 
 services:
   zerotier-sidecar:
+    # Доступен на Docker Hub или GitHub Container Registry
     image: alexbic/zerotier-sidecar:latest
+    # Альтернатива: ghcr.io/alexbic/zerotier-sidecar:latest
     container_name: zerotier-sidecar
     restart: unless-stopped
     privileged: true
