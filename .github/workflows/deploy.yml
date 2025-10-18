@@ -22,6 +22,10 @@ on:
       custom_version:
         description: 'Custom version (only if custom selected, format: v1.2.3)'
         required: false
+      release_notes:
+        description: 'Custom release notes (Markdown). If empty, will use commit message or auto-generate changelog'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -296,30 +300,12 @@ jobs:
         run: |
           echo "Generating release body for minor version..."
 
-          # Получаем последний коммит
-          LAST_COMMIT_SUBJECT=$(git log -1 --pretty=format:"%s")
-          LAST_COMMIT_BODY=$(git log -1 --pretty=format:"%b")
-          LAST_COMMIT_FULL=$(git log -1 --pretty=format:"%B")
+          # Получаем переменные для заголовка
+          PRODUCT_NAME="${{ steps.vars.outputs.product_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
 
-          # Считаем строки в полном сообщении коммита
-          COMMIT_LINES=$(echo "$LAST_COMMIT_FULL" | wc -l | tr -d ' ')
-
-          echo "Last commit subject: $LAST_COMMIT_SUBJECT"
-          echo "Last commit lines: $COMMIT_LINES"
-
-          # Проверяем является ли это Release Note
-          # Условия: >10 строк И содержит markdown заголовки или списки с эмодзи
-          IS_RELEASE_NOTE=false
-          if [ "$COMMIT_LINES" -gt 10 ]; then
-            if echo "$LAST_COMMIT_FULL" | grep -qE '^(#{1,3} |[-*] |[✅❌🎯🚀🐛📚🔄🎉✨🔧🐳⚙️📋])'; then
-              IS_RELEASE_NOTE=true
-              echo "✅ Detected release note in last commit (${COMMIT_LINES} lines, contains markdown)"
-            else
-              echo "ℹ️ Last commit has ${COMMIT_LINES} lines but no markdown formatting"
-            fi
-          else
-            echo "ℹ️ Last commit is too short (${COMMIT_LINES} lines) - not a release note"
-          fi
+          # Получаем пользовательские release notes из input (если указаны)
+          CUSTOM_RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
 
           # Определяем паттерн тегов для changelog
           BRANCH="${GITHUB_REF_NAME}"
@@ -345,16 +331,12 @@ jobs:
             CHANGELOG="- No changes"
           fi
 
-          # Получаем переменные для заголовка
-          PRODUCT_NAME="${{ steps.vars.outputs.product_name }}"
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Формируем тело релиза
-          if [ "$IS_RELEASE_NOTE" = "true" ]; then
-            # Вариант A: Release Note + Changelog
-            echo "Using release note from commit + changelog"
+          # Формируем тело релиза в зависимости от источника
+          if [ -n "$CUSTOM_RELEASE_NOTES" ]; then
+            # Вариант A: Пользовательские release notes + Changelog
+            echo "✅ Using custom release notes from workflow input"
             {
-              echo "$LAST_COMMIT_FULL"
+              echo "$CUSTOM_RELEASE_NOTES"
               echo ""
               echo "---"
               echo ""
@@ -363,15 +345,52 @@ jobs:
               echo "$CHANGELOG"
             } > /tmp/release_body.txt
           else
-            # Вариант B: Только Changelog
-            echo "Using auto-generated changelog only"
-            {
-              echo "## ${PRODUCT_NAME} ${VERSION}"
-              echo ""
-              echo "## 📋 Changelog"
-              echo ""
-              echo "$CHANGELOG"
-            } > /tmp/release_body.txt
+            # Нет пользовательских notes, проверяем коммит
+            echo "No custom release notes provided, checking last commit..."
+
+            # Получаем последний коммит
+            LAST_COMMIT_FULL=$(git log -1 --pretty=format:"%B")
+            COMMIT_LINES=$(echo "$LAST_COMMIT_FULL" | wc -l | tr -d ' ')
+
+            echo "Last commit lines: $COMMIT_LINES"
+
+            # Проверяем является ли это Release Note
+            # Условия: >10 строк И содержит markdown заголовки или списки с эмодзи
+            IS_RELEASE_NOTE=false
+            if [ "$COMMIT_LINES" -gt 10 ]; then
+              if echo "$LAST_COMMIT_FULL" | grep -qE '^(#{1,3} |[-*] |[✅❌🎯🚀🐛📚🔄🎉✨🔧🐳⚙️📋])'; then
+                IS_RELEASE_NOTE=true
+                echo "✅ Detected release note in last commit (${COMMIT_LINES} lines, contains markdown)"
+              else
+                echo "ℹ️ Last commit has ${COMMIT_LINES} lines but no markdown formatting"
+              fi
+            else
+              echo "ℹ️ Last commit is too short (${COMMIT_LINES} lines) - not a release note"
+            fi
+
+            if [ "$IS_RELEASE_NOTE" = "true" ]; then
+              # Вариант B: Release Note из коммита + Changelog
+              echo "Using release note from commit + changelog"
+              {
+                echo "$LAST_COMMIT_FULL"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## 📋 Changelog"
+                echo ""
+                echo "$CHANGELOG"
+              } > /tmp/release_body.txt
+            else
+              # Вариант C: Только Changelog (без release note)
+              echo "Using auto-generated changelog only"
+              {
+                echo "## ${PRODUCT_NAME} ${VERSION}"
+                echo ""
+                echo "## 📋 Changelog"
+                echo ""
+                echo "$CHANGELOG"
+              } > /tmp/release_body.txt
+            fi
           fi
 
           # Сохраняем в переменную окружения
