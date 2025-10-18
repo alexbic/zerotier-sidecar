@@ -49,7 +49,6 @@ jobs:
           DOCKER_FILES=(
             "Dockerfile"
             "start-sidecar.sh"
-            ".env.example"
           )
 
           # При ручном запуске всегда пересобираем
