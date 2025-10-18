@@ -14,16 +14,22 @@ A powerful Docker container that acts as a ZeroTier network bridge with multiple
 
 Perfect for creating secure access chains and accessing services remotely through ZeroTier's encrypted network mesh.
 
-## 🐳 Docker Hub
+## 🐳 Docker Images
 
-**Ready to use Docker image**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
+Docker images are available on both **Docker Hub** and **GitHub Container Registry**:
 
+**Docker Hub**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 ```bash
 # Pull the gateway-enabled version
 docker pull alexbic/zerotier-sidecar:gateway
 
 # Or use latest tag (points to gateway)
 docker pull alexbic/zerotier-sidecar:latest
+```
+
+**GitHub Container Registry**: [`ghcr.io/alexbic/zerotier-sidecar`](https://github.com/alexbic/zerotier-sidecar/pkgs/container/zerotier-sidecar)
+```bash
+docker pull ghcr.io/alexbic/zerotier-sidecar:latest
 ```
 
 ## 🚀 Features
@@ -103,7 +109,9 @@ version: "3.8"
 
 services:
   zerotier-sidecar:
+    # Available on Docker Hub or GitHub Container Registry
     image: alexbic/zerotier-sidecar:latest
+    # Alternative: ghcr.io/alexbic/zerotier-sidecar:latest
     container_name: zerotier-sidecar
     restart: unless-stopped
     privileged: true

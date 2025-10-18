@@ -14,16 +14,22 @@
 
 Идеально подходит для создания безопасных цепочек доступа и удаленного доступа к сервисам через зашифрованную сеть ZeroTier.
 
-## 🐳 Docker Hub
+## 🐳 Docker образы
 
-**Готовый образ Docker**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
+Docker образы доступны на **Docker Hub** и **GitHub Container Registry**:
 
+**Docker Hub**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 ```bash
 # Загрузить версию с поддержкой gateway
 docker pull alexbic/zerotier-sidecar:gateway
 
 # Или использовать тег latest (указывает на gateway)
 docker pull alexbic/zerotier-sidecar:latest
+```
+
+**GitHub Container Registry**: [`ghcr.io/alexbic/zerotier-sidecar`](https://github.com/alexbic/zerotier-sidecar/pkgs/container/zerotier-sidecar)
+```bash
+docker pull ghcr.io/alexbic/zerotier-sidecar:latest
 ```
 
 ## 🚀 Возможности
@@ -103,7 +109,9 @@ version: "3.8"
 
 services:
   zerotier-sidecar:
+    # Доступен на Docker Hub или GitHub Container Registry
     image: alexbic/zerotier-sidecar:latest
+    # Альтернатива: ghcr.io/alexbic/zerotier-sidecar:latest
     container_name: zerotier-sidecar
     restart: unless-stopped
     privileged: true
