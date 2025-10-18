@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   zerotier-sidecar:
-    image: alexbic/zerotier-sidecar:latest
+    image: alexbic/zerotier-sidecar:gateway
     container_name: zerotier-sidecar
     restart: unless-stopped
     privileged: true
@@ -13,7 +13,11 @@ services:
     networks:
       - default
     env_file:
-      - stack.env
+      - .env
+    environment:
+      # Default settings (can be overridden in .env file)
+      - GATEWAY_MODE=${GATEWAY_MODE:-false}
+      - ALLOWED_SOURCES=${ALLOWED_SOURCES:-any}
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
