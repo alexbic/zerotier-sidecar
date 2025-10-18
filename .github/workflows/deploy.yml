@@ -263,7 +263,52 @@ jobs:
           
           echo "New version: $NEW_VERSION"
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          
+
+      - name: 🔍 Check if version exists
+        if: steps.docker_check.outputs.should_build == 'true'
+        id: version_exists
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
+
+          echo "=== VERSION EXISTENCE CHECK ==="
+          echo "Version: $VERSION"
+          echo "Version type: $VERSION_TYPE"
+
+          # Проверяем существует ли тег
+          TAG_EXISTS="false"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            TAG_EXISTS="true"
+            echo "✅ Git tag $VERSION already exists"
+          else
+            echo "ℹ️ Git tag $VERSION does not exist yet"
+          fi
+
+          # Проверяем существует ли release (только если это ручной запуск)
+          RELEASE_EXISTS="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if gh release view "$VERSION" >/dev/null 2>&1; then
+              RELEASE_EXISTS="true"
+              echo "✅ GitHub Release $VERSION already exists"
+            else
+              echo "ℹ️ GitHub Release $VERSION does not exist yet"
+            fi
+          fi
+
+          # Для custom версии: если тег и release существуют - это режим rebuild
+          IS_REBUILD="false"
+          if [ "$VERSION_TYPE" = "custom" ] && [ "$TAG_EXISTS" = "true" ]; then
+            IS_REBUILD="true"
+            echo "🔄 REBUILD MODE: Version exists, will only rebuild Docker images"
+            echo "   - Skip tag creation"
+            echo "   - Skip release creation"
+            echo "   - Only rebuild and push Docker images"
+          fi
+
+          echo "tag_exists=$TAG_EXISTS" >> $GITHUB_OUTPUT
+          echo "release_exists=$RELEASE_EXISTS" >> $GITHUB_OUTPUT
+          echo "is_rebuild=$IS_REBUILD" >> $GITHUB_OUTPUT
+
       - name: 🏷️ Check if release needed
         if: steps.docker_check.outputs.should_build == 'true'
         id: release_check
@@ -448,7 +493,7 @@ jobs:
             --push .
 
       - name: 🏷️ Create Git Tag
-        if: steps.docker_check.outputs.should_build == 'true'
+        if: steps.docker_check.outputs.should_build == 'true' && steps.version_exists.outputs.is_rebuild == 'false'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           echo "Creating git tag: $VERSION"
@@ -463,7 +508,7 @@ jobs:
           fi
 
       - name: 🎯 Create GitHub Release
-        if: steps.docker_check.outputs.should_build == 'true' && steps.release_check.outputs.should_create_release == 'true'
+        if: steps.docker_check.outputs.should_build == 'true' && steps.release_check.outputs.should_create_release == 'true' && steps.version_exists.outputs.is_rebuild == 'false'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.version }}
@@ -492,7 +537,19 @@ jobs:
       - name: ✅ Summary
         if: steps.docker_check.outputs.should_build == 'true'
         run: |
-          echo "🎉 Deployment completed successfully!"
+          IS_REBUILD="${{ steps.version_exists.outputs.is_rebuild }}"
+
+          if [ "$IS_REBUILD" = "true" ]; then
+            echo "🔄 Rebuild completed successfully!"
+            echo ""
+            echo "ℹ️ REBUILD MODE: Version ${{ steps.version.outputs.version }} already exists"
+            echo "   - Git tag: already exists (skipped)"
+            echo "   - GitHub Release: already exists (skipped)"
+            echo "   - Docker images: rebuilt and pushed ✅"
+          else
+            echo "🎉 Deployment completed successfully!"
+          fi
+
           echo ""
           echo "📦 Docker images pushed to Docker Hub:"
           echo "   - alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }}"
@@ -502,20 +559,23 @@ jobs:
           echo "   - ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.base_tag }}"
           echo "   - ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
           echo ""
-          echo "🏷️ Git tag created: ${{ steps.version.outputs.version }}"
-          echo ""
 
-          if [ "${{ steps.release_check.outputs.should_create_release }}" = "true" ]; then
-            echo "✅ GitHub Release created: ${{ steps.version.outputs.version }}"
-            echo "🔗 View release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}"
-          else
-            VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
-            EVENT_NAME="${{ github.event_name }}"
-            echo "ℹ️ No GitHub Release created"
-            echo "   Reason: Only minor versions create releases"
-            echo "   Current: event=$EVENT_NAME, version_type=$VERSION_TYPE"
+          if [ "$IS_REBUILD" = "false" ]; then
+            echo "🏷️ Git tag created: ${{ steps.version.outputs.version }}"
             echo ""
-            echo "💡 To create a release:"
-            echo "   1. Go to Actions → Deploy Zerotier Sidecar → Run workflow"
-            echo "   2. Select 'minor' as version type"
+
+            if [ "${{ steps.release_check.outputs.should_create_release }}" = "true" ]; then
+              echo "✅ GitHub Release created: ${{ steps.version.outputs.version }}"
+              echo "🔗 View release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}"
+            else
+              VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
+              EVENT_NAME="${{ github.event_name }}"
+              echo "ℹ️ No GitHub Release created"
+              echo "   Reason: Only minor versions create releases"
+              echo "   Current: event=$EVENT_NAME, version_type=$VERSION_TYPE"
+              echo ""
+              echo "💡 To create a release:"
+              echo "   1. Go to Actions → Deploy Zerotier Sidecar → Run workflow"
+              echo "   2. Select 'minor' as version type"
+            fi
           fi
