@@ -288,11 +288,28 @@ jobs:
           # Проверяем существует ли release (только если это ручной запуск)
           RELEASE_EXISTS="false"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Checking if GitHub Release exists for $VERSION..."
+
+            # Метод 1: gh release view
             if gh release view "$VERSION" >/dev/null 2>&1; then
               RELEASE_EXISTS="true"
-              echo "✅ GitHub Release $VERSION already exists"
+              echo "✅ GitHub Release $VERSION found (via gh release view)"
             else
-              echo "ℹ️ GitHub Release $VERSION does not exist yet"
+              # Метод 2: gh release list
+              if gh release list --limit 100 | grep -q "^${VERSION}"; then
+                RELEASE_EXISTS="true"
+                echo "✅ GitHub Release $VERSION found (via gh release list)"
+              else
+                # Метод 3: GitHub API напрямую
+                if curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/${{ github.repository }}/releases/tags/$VERSION" \
+                  | grep -q '"tag_name"'; then
+                  RELEASE_EXISTS="true"
+                  echo "✅ GitHub Release $VERSION found (via GitHub API)"
+                else
+                  echo "ℹ️ GitHub Release $VERSION does not exist"
+                fi
+              fi
             fi
           fi
 
