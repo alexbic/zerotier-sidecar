@@ -48,7 +48,6 @@ jobs:
           # Файлы, изменение которых требует пересборки Docker образа
           DOCKER_FILES=(
             "Dockerfile"
-            "docker-compose.yml"
             "start-sidecar.sh"
             ".env.example"
           )
