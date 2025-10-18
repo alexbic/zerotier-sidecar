@@ -22,6 +22,8 @@ docker pull alexbic/zerotier-sidecar:latest
 - **🔐 Secure Port Forwarding**: Flexible port mapping from ZeroTier network to Docker containers through encrypted connection
 - **📦 Easy Deployment**: Single Docker container with simple configuration
 - **🌐 ZeroTier & Docker Integration**: Seamless bridge between ZeroTier networks and Docker containers
+- **🏷️ Container Name Resolution**: Use container names instead of IPs in port forwarding rules
+- **🔍 Smart DNS Management**: Preserves Docker embedded DNS for seamless service discovery
 
 ## 🎯 Use Cases
 
@@ -57,10 +59,7 @@ services:
     networks:
       - default
     env_file:
-      - stack.env
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - .env
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
@@ -70,14 +69,16 @@ networks:
     name: sidecar_net
 ```
 
-3. **Create `stack.env`**:
+3. **Create `.env`**:
 ```bash
 # Your ZeroTier Network ID
 ZT_NETWORK=your_zerotier_network_id_here
 
-# Port forwarding: EXTERNAL_PORT:DEST_IP:DEST_PORT
+# Port forwarding: EXTERNAL_PORT:DEST_IP_OR_NAME:DEST_PORT
 # Multiple ports separated by comma
-PORT_FORWARD=873:172.26.0.3:873,22:172.26.0.4:22
+# You can use container names or IP addresses!
+PORT_FORWARD=873:my-rsync-server:873,22:my-ssh-server:22
+# Or with IPs: PORT_FORWARD=873:172.26.0.3:873,22:172.26.0.4:22
 ```
 
 4. **Deploy**:
@@ -93,11 +94,10 @@ docker run -d \
   --privileged \
   --device /dev/net/tun \
   --restart unless-stopped \
-  --dns 8.8.8.8 \
   --cap-add NET_ADMIN \
   --cap-add SYS_ADMIN \
   -e ZT_NETWORK=your_network_id \
-  -e PORT_FORWARD=873:172.26.0.3:873 \
+  -e PORT_FORWARD=873:my-service:873 \
   -v zerotier-data:/var/lib/zerotier-one \
   alexbic/zerotier-sidecar:latest
 ```
@@ -113,18 +113,22 @@ docker run -d \
 
 ### Port Forwarding Format
 
-The `PORT_FORWARD` variable uses the format: `EXTERNAL_PORT:DEST_IP:DEST_PORT`
+The `PORT_FORWARD` variable uses the format: `EXTERNAL_PORT:DEST_IP_OR_NAME:DEST_PORT`
 
 - **EXTERNAL_PORT**: Port accessible from ZeroTier network
-- **DEST_IP**: Target Docker container IP
+- **DEST_IP_OR_NAME**: Target Docker container IP or container name
 - **DEST_PORT**: Target container port
 
 **Examples**:
-- Single port: `873:172.26.0.3:873`
-- Multiple ports: `873:172.26.0.3:873,22:172.26.0.4:22,80:172.26.0.5:8080`
-- Container name example: `873:my-service:873`
+- Using container names (recommended): `873:my-rsync-server:873,22:my-ssh-server:22`
+- Using IPs: `873:172.26.0.3:873,22:172.26.0.4:22`
+- Mixed: `873:my-service:873,22:172.26.0.4:22,80:nginx:8080`
 
-Note: you can also use a Docker container name (or hostname) as the DEST when the sidecar and the target service are attached to the same Docker network.
+**Container Name Resolution**:
+- Container names are automatically resolved to IPs at startup
+- Works with containers in the same Docker network
+- Uses Docker's embedded DNS (127.0.0.11) for reliable resolution
+- Falls back to system DNS if needed
 
 ## 🔧 Setup Guide
 

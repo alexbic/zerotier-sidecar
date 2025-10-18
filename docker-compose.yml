@@ -13,7 +13,7 @@ services:
     networks:
       - default
     env_file:
-      - stack.env
+      - .env
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN

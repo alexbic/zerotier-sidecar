@@ -1,0 +1,480 @@
+name: 🚀 Deploy Zerotier Sidecar
+on:
+  push:
+    branches:
+      - main
+      - gateway
+    # Исключаем push тегов чтобы избежать циклов
+    tags-ignore:
+      - '**'
+  # Дополнительно: ручной запуск с возможностью указать версию
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - custom
+      custom_version:
+        description: 'Custom version (only if custom selected, format: v1.2.3)'
+        required: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    # Пропускаем запуск если коммит сделан ботом GitHub Actions
+    if: github.actor != 'github-actions[bot]'
+    
+    steps:
+      - name: 🧩 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔍 Check if Docker rebuild needed
+        id: docker_check
+        run: |
+          echo "Checking if Docker-related files changed..."
+
+          # Файлы, изменение которых требует пересборки Docker образа
+          DOCKER_FILES=(
+            "Dockerfile"
+            "docker-compose.yml"
+            "start-sidecar.sh"
+            ".env.example"
+          )
+
+          # При ручном запуске всегда пересобираем
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "✅ Manual trigger - will rebuild Docker image"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Для автоматического push - проверяем изменения в текущем коммите
+          echo "Checking files changed in current push..."
+
+          # Получаем список измененных файлов в последнем коммите
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "⚠️ Cannot determine changed files - will rebuild to be safe"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Changed files in this push:"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          # Проверяем изменения в Docker-файлах
+          DOCKER_CHANGED=false
+          for file in "${DOCKER_FILES[@]}"; do
+            if echo "$CHANGED_FILES" | grep -q "^${file}$"; then
+              echo "✅ Changed: $file"
+              DOCKER_CHANGED=true
+            fi
+          done
+
+          # Дополнительная проверка: если изменились ТОЛЬКО файлы из .github/ или README - не билдим
+          NON_IGNORED_FILES=$(echo "$CHANGED_FILES" | grep -v "^\.github/" | grep -v "^README" | grep -v "^\.gitignore$" || true)
+
+          if [ -z "$NON_IGNORED_FILES" ]; then
+            echo "ℹ️ Only documentation/workflow files changed - skipping build"
+            echo "   Changed files: $(echo "$CHANGED_FILES" | tr '\n' ', ')"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if [ "$DOCKER_CHANGED" = "true" ]; then
+            echo "✅ Docker-related files changed - will rebuild"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No Docker-related files changed - skipping build"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📋 Early exit if no build needed
+        if: steps.docker_check.outputs.should_build == 'false'
+        run: |
+          echo "🎉 Workflow completed - no Docker build needed"
+          echo ""
+          echo "ℹ️ Changed files don't affect the Docker image"
+          echo "   No version tags or Docker builds will be created"
+          echo ""
+          echo "💡 To force a build, manually trigger this workflow"
+          exit 0
+
+      - name: 🔑 Setup Git config
+        if: steps.docker_check.outputs.should_build == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 🧠 Set environment
+        if: steps.docker_check.outputs.should_build == 'true'
+        id: vars
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          echo "Branch detected: $BRANCH"
+          if [ "$BRANCH" = "main" ]; then
+            BASE_TAG="latest"
+            IS_RELEASE_BRANCH=true
+            IS_PRERELEASE=false
+            PRODUCT_NAME="ZeroTier Sidecar Core"
+          elif [ "$BRANCH" = "gateway" ]; then
+            BASE_TAG="gateway"
+            IS_RELEASE_BRANCH=true
+            IS_PRERELEASE=false
+            PRODUCT_NAME="ZeroTier Sidecar Gateway"
+          else
+            BASE_TAG="dev"
+            IS_RELEASE_BRANCH=false
+            IS_PRERELEASE=true
+            PRODUCT_NAME="ZeroTier Sidecar Dev"
+          fi
+          echo "base_tag=$BASE_TAG" >> $GITHUB_OUTPUT
+          echo "is_release_branch=$IS_RELEASE_BRANCH" >> $GITHUB_OUTPUT
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+          echo "product_name=$PRODUCT_NAME" >> $GITHUB_OUTPUT
+          echo "Base tag: $BASE_TAG"
+          echo "Is release branch: $IS_RELEASE_BRANCH"
+          echo "Is prerelease: $IS_PRERELEASE"
+          echo "Product: $PRODUCT_NAME"
+          
+      - name: 📦 Determine version strategy
+        if: steps.docker_check.outputs.should_build == 'true'
+        id: version_strategy
+        run: |
+          set -e
+          
+          echo "=== DEBUG INPUTS ==="
+          echo "Event name: ${{ github.event_name }}"
+          echo "Version type input: '${{ github.event.inputs.version_type }}'"
+          echo "Custom version input: '${{ github.event.inputs.custom_version }}'"
+          
+          # Определяем тип версионирования
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION_TYPE="${{ github.event.inputs.version_type }}"
+            CUSTOM_VERSION="${{ github.event.inputs.custom_version }}"
+            echo "Manual trigger with version type: $VERSION_TYPE"
+            if [ "$VERSION_TYPE" = "custom" ]; then
+              echo "Custom version specified: $CUSTOM_VERSION"
+              if [ -z "$CUSTOM_VERSION" ]; then
+                echo "WARNING: Custom version is empty!"
+              fi
+            fi
+          else
+            # Автоматический push - всегда patch increment
+            VERSION_TYPE="patch"
+            CUSTOM_VERSION=""
+            echo "Automatic push trigger - using patch increment"
+          fi
+          
+          echo "version_type=$VERSION_TYPE" >> $GITHUB_OUTPUT
+          echo "custom_version=$CUSTOM_VERSION" >> $GITHUB_OUTPUT
+          echo "Final outputs - version_type: $VERSION_TYPE, custom_version: $CUSTOM_VERSION"
+          
+      - name: 📊 Calculate version
+        if: steps.docker_check.outputs.should_build == 'true'
+        id: version
+        run: |
+          set -e
+          echo "Calculating version..."
+          
+          BRANCH="${GITHUB_REF_NAME}"
+          
+          # Определяем префикс версии для разных веток
+          if [ "$BRANCH" = "main" ]; then
+            VERSION_PREFIX="v1"
+            TAG_PATTERN="v1.*"
+          elif [ "$BRANCH" = "gateway" ]; then
+            VERSION_PREFIX="v2"
+            TAG_PATTERN="v2.*"
+          else
+            VERSION_PREFIX="v0"
+            TAG_PATTERN="v0.*"
+          fi
+          
+          echo "Branch: $BRANCH, Version prefix: $VERSION_PREFIX"
+          
+          # DEBUG: Проверяем inputs из предыдущего step
+          VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
+          CUSTOM_VERSION="${{ steps.version_strategy.outputs.custom_version }}"
+          echo "=== VERSION CALCULATION DEBUG ==="
+          echo "Received version_type: '$VERSION_TYPE'"
+          echo "Received custom_version: '$CUSTOM_VERSION'"
+          
+          # Проверяем custom сразу
+          if [ "$VERSION_TYPE" = "custom" ]; then
+            if [ -z "$CUSTOM_VERSION" ]; then
+              echo "❌ Custom version not provided"
+              exit 1
+            fi
+            echo "Using custom version: $CUSTOM_VERSION"
+            echo "version=$CUSTOM_VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Получаем последний СТАБИЛЬНЫЙ тег для текущей ветки (без -beta, -alpha, -rc)
+          # Фильтруем только теги без суффиксов
+          LAST_TAG=$(git tag --list "$TAG_PATTERN" | grep -v '\-' | sort -V | tail -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            echo "No stable tags found for pattern $TAG_PATTERN, starting with ${VERSION_PREFIX}.0.0"
+            NEW_VERSION="${VERSION_PREFIX}.0.0"
+          else
+            echo "Last stable tag found for branch: $LAST_TAG"
+            
+            # Парсим версию (убираем суффиксы типа -beta, -alpha, -rc1)
+            CLEAN_VERSION="${LAST_TAG#v}"                    # Убираем 'v'
+            CLEAN_VERSION="${CLEAN_VERSION%%-*}"             # Убираем всё после первого '-'
+            IFS='.' read -r MAJOR MINOR PATCH <<<"$CLEAN_VERSION"
+            echo "Current version: MAJOR=$MAJOR, MINOR=$MINOR, PATCH=$PATCH (from $LAST_TAG)"
+            
+            # Определяем новую версию
+            case $VERSION_TYPE in
+              "minor")
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              "patch")
+                PATCH=$((PATCH + 1))
+                ;;
+              *)
+                echo "❌ Unknown version type: $VERSION_TYPE"
+                exit 1
+                ;;
+            esac
+            
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          
+          echo "New version: $NEW_VERSION"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          
+      - name: 🏷️ Check if release needed
+        if: steps.docker_check.outputs.should_build == 'true'
+        id: release_check
+        run: |
+          IS_RELEASE_BRANCH="${{ steps.vars.outputs.is_release_branch }}"
+          VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
+          EVENT_NAME="${{ github.event_name }}"
+          SHOULD_CREATE_RELEASE="false"
+
+          echo "=== RELEASE CHECK ==="
+          echo "Event: $EVENT_NAME"
+          echo "Version type: $VERSION_TYPE"
+          echo "Is release branch: $IS_RELEASE_BRANCH"
+
+          # GitHub Release создается ТОЛЬКО для minor версий при ручном запуске
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$VERSION_TYPE" = "minor" ]; then
+            if [ "$IS_RELEASE_BRANCH" = "true" ]; then
+              SHOULD_CREATE_RELEASE="true"
+              echo "✅ Will create GitHub Release (manual minor version)"
+            else
+              echo "⚠️ Not a release branch - skipping release"
+            fi
+          else
+            echo "ℹ️ No GitHub Release (only for manual minor versions)"
+            echo "   - Event: $EVENT_NAME (need: workflow_dispatch)"
+            echo "   - Version type: $VERSION_TYPE (need: minor)"
+          fi
+
+          echo "should_create_release=$SHOULD_CREATE_RELEASE" >> $GITHUB_OUTPUT
+          
+      - name: 📝 Generate release body
+        if: steps.docker_check.outputs.should_build == 'true' && steps.release_check.outputs.should_create_release == 'true'
+        id: release_body
+        run: |
+          echo "Generating release body for minor version..."
+
+          # Получаем последний коммит
+          LAST_COMMIT_SUBJECT=$(git log -1 --pretty=format:"%s")
+          LAST_COMMIT_BODY=$(git log -1 --pretty=format:"%b")
+          LAST_COMMIT_FULL=$(git log -1 --pretty=format:"%B")
+
+          # Считаем строки в полном сообщении коммита
+          COMMIT_LINES=$(echo "$LAST_COMMIT_FULL" | wc -l | tr -d ' ')
+
+          echo "Last commit subject: $LAST_COMMIT_SUBJECT"
+          echo "Last commit lines: $COMMIT_LINES"
+
+          # Проверяем является ли это Release Note
+          # Условия: >10 строк И содержит markdown заголовки или списки с эмодзи
+          IS_RELEASE_NOTE=false
+          if [ "$COMMIT_LINES" -gt 10 ]; then
+            if echo "$LAST_COMMIT_FULL" | grep -qE '^(#{1,3} |[-*] |[✅❌🎯🚀🐛📚🔄🎉✨🔧🐳⚙️📋])'; then
+              IS_RELEASE_NOTE=true
+              echo "✅ Detected release note in last commit (${COMMIT_LINES} lines, contains markdown)"
+            else
+              echo "ℹ️ Last commit has ${COMMIT_LINES} lines but no markdown formatting"
+            fi
+          else
+            echo "ℹ️ Last commit is too short (${COMMIT_LINES} lines) - not a release note"
+          fi
+
+          # Определяем паттерн тегов для changelog
+          BRANCH="${GITHUB_REF_NAME}"
+          if [ "$BRANCH" = "main" ]; then
+            TAG_PATTERN="v1.*"
+          elif [ "$BRANCH" = "gateway" ]; then
+            TAG_PATTERN="v2.*"
+          else
+            TAG_PATTERN="v0.*"
+          fi
+
+          # Генерируем changelog (используем только стабильные теги без суффиксов)
+          LAST_TAG=$(git tag --list "$TAG_PATTERN" | grep -v '\-' | sort -V | tail -n 1)
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous stable tags found for pattern $TAG_PATTERN - generating full changelog"
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges | head -50)
+          else
+            echo "Generating changelog since stable tag $LAST_TAG"
+            CHANGELOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- No changes"
+          fi
+
+          # Получаем переменные для заголовка
+          PRODUCT_NAME="${{ steps.vars.outputs.product_name }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Формируем тело релиза
+          if [ "$IS_RELEASE_NOTE" = "true" ]; then
+            # Вариант A: Release Note + Changelog
+            echo "Using release note from commit + changelog"
+            {
+              echo "$LAST_COMMIT_FULL"
+              echo ""
+              echo "---"
+              echo ""
+              echo "## 📋 Changelog"
+              echo ""
+              echo "$CHANGELOG"
+            } > /tmp/release_body.txt
+          else
+            # Вариант B: Только Changelog
+            echo "Using auto-generated changelog only"
+            {
+              echo "## ${PRODUCT_NAME} ${VERSION}"
+              echo ""
+              echo "## 📋 Changelog"
+              echo ""
+              echo "$CHANGELOG"
+            } > /tmp/release_body.txt
+          fi
+
+          # Сохраняем в переменную окружения
+          {
+            echo "RELEASE_BODY<<EOF"
+            cat /tmp/release_body.txt
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+          echo "✅ Release body generated successfully"
+
+      - name: 🧾 Show info
+        if: steps.docker_check.outputs.should_build == 'true'
+        run: |
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Base tag: ${{ steps.vars.outputs.base_tag }}"
+          echo "Version: ${{ steps.version.outputs.version }}"
+          echo "Is release branch: ${{ steps.vars.outputs.is_release_branch }}"
+          echo "Should create release: ${{ steps.release_check.outputs.should_create_release }}"
+          echo "Should build Docker: ${{ steps.docker_check.outputs.should_build }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Event: ${{ github.event_name }}"
+          
+      - name: 🔐 Login to Docker Hub
+        if: steps.docker_check.outputs.should_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🔧 Build & Push Docker
+        if: steps.docker_check.outputs.should_build == 'true'
+        run: |
+          echo "Building Docker image:"
+          echo " - alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }}"
+          echo " - alexbic/zerotier-sidecar:${{ steps.version.outputs.version }}"
+          docker buildx build \
+            --platform linux/amd64 \
+            -t alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }} \
+            -t alexbic/zerotier-sidecar:${{ steps.version.outputs.version }} \
+            --push .
+
+      - name: 🏷️ Create Git Tag
+        if: steps.docker_check.outputs.should_build == 'true'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Creating git tag: $VERSION"
+
+          # Проверяем существует ли уже тег
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "⚠️ Tag $VERSION already exists, skipping tag creation"
+          else
+            git tag "$VERSION"
+            git push origin "$VERSION"
+            echo "✅ Tag $VERSION created and pushed"
+          fi
+
+      - name: 🎯 Create GitHub Release
+        if: steps.docker_check.outputs.should_build == 'true' && steps.release_check.outputs.should_create_release == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "${{ steps.vars.outputs.product_name }} ${{ steps.version.outputs.version }}"
+          body: |
+            ${{ env.RELEASE_BODY }}
+
+            ---
+
+            ## 🐳 Docker Images
+            - `alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }}`
+            - `alexbic/zerotier-sidecar:${{ steps.version.outputs.version }}`
+
+            ---
+            *This release was automatically generated by GitHub Actions*
+          draft: false
+          prerelease: ${{ steps.vars.outputs.is_prerelease }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: ✅ Summary
+        if: steps.docker_check.outputs.should_build == 'true'
+        run: |
+          echo "🎉 Deployment completed successfully!"
+          echo ""
+          echo "📦 Docker images pushed:"
+          echo "   - alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }}"
+          echo "   - alexbic/zerotier-sidecar:${{ steps.version.outputs.version }}"
+          echo ""
+          echo "🏷️ Git tag created: ${{ steps.version.outputs.version }}"
+          echo ""
+
+          if [ "${{ steps.release_check.outputs.should_create_release }}" = "true" ]; then
+            echo "✅ GitHub Release created: ${{ steps.version.outputs.version }}"
+            echo "🔗 View release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}"
+          else
+            VERSION_TYPE="${{ steps.version_strategy.outputs.version_type }}"
+            EVENT_NAME="${{ github.event_name }}"
+            echo "ℹ️ No GitHub Release created"
+            echo "   Reason: Only minor versions create releases"
+            echo "   Current: event=$EVENT_NAME, version_type=$VERSION_TYPE"
+            echo ""
+            echo "💡 To create a release:"
+            echo "   1. Go to Actions → Deploy Zerotier Sidecar → Run workflow"
+            echo "   2. Select 'minor' as version type"
+          fi

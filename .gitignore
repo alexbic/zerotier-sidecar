@@ -3,9 +3,9 @@ sidecar-data/
 zerotier-data/
 
 # Environment files with secrets
-stack.env
 .env
 *.env
+!.env.example
 
 # Docker volumes
 volumes/
