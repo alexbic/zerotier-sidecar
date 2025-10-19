@@ -239,18 +239,47 @@ PORT_FORWARD=8989:10.121.15.16:8989,443:10.121.15.20:443
 
 **⚠️ IMPORTANT - Gateway Mode Port Exposure**:
 
-In **Gateway Mode**, the **first port** in `PORT_FORWARD` (EXTERNAL_PORT) **MUST be published** in the `ports:` section of `docker-compose.yml`. Otherwise, internet clients won't be able to connect!
+In **Gateway Mode**, the **first port** in `PORT_FORWARD` (EXTERNAL_PORT) must be accessible to clients. There are two scenarios:
 
-**Example**:
+**Scenario 1: Direct Internet Access** (sidecar exposed to internet)
 ```yaml
-# In docker-compose.yml:
-ports:
-  - "8989:8989"  # ✅ REQUIRED - matches PORT_FORWARD first port
-  - "443:443"    # ✅ REQUIRED - matches PORT_FORWARD first port
-
-# In .env:
-PORT_FORWARD=8989:10.121.15.16:8989,443:10.121.15.20:443
+services:
+  zerotier-sidecar:
+    image: alexbic/zerotier-sidecar:gateway
+    ports:
+      - "8989:8989"  # ✅ REQUIRED - published to host (0.0.0.0:8989)
+      - "443:443"    # ✅ REQUIRED - published to host
+    environment:
+      - PORT_FORWARD=8989:10.121.15.16:8989,443:10.121.15.20:443
 ```
+
+**Scenario 2: Behind Reverse Proxy** (nginx/traefik in front)
+```yaml
+services:
+  zerotier-sidecar:
+    image: alexbic/zerotier-sidecar:gateway
+    expose:
+      - "8989"  # ✅ Only expose to Docker network, NOT to host
+    networks:
+      - proxy_network  # ✅ MUST be in same network as proxy
+    environment:
+      - PORT_FORWARD=8989:10.121.15.16:8989
+
+  nginx-proxy:
+    image: nginx
+    ports:
+      - "80:80"  # Proxy publishes to internet
+    networks:
+      - proxy_network  # ✅ MUST be in same network as sidecar
+
+networks:
+  proxy_network:
+```
+
+**Key Differences**:
+- **`ports:`** - Publishes to host (accessible from internet)
+- **`expose:`** - Only accessible to containers in same network
+- **Reverse proxy setup**: Sidecar and proxy **MUST share the same Docker network**
 
 **Backend Mode** does NOT require port publishing - traffic flows through ZeroTier network internally.
 
