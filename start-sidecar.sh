@@ -312,44 +312,97 @@ while [ $attempt -lt 30 ]; do
     attempt=$((attempt+1))
 done
 
-# Присоединяемся к сети
+# Присоединяемся к сети (поддержка нескольких сетей через запятую)
 if [ -n "$ZT_NETWORK" ]; then
-    echo "Joining ZeroTier network: $ZT_NETWORK"
-    zerotier-cli join $ZT_NETWORK
-    
+    echo "Joining ZeroTier network(s): $ZT_NETWORK"
+    IFS=',' read -ra NETWORKS <<< "$ZT_NETWORK"
+    for network in "${NETWORKS[@]}"; do
+        network=$(echo "$network" | xargs)  # Trim whitespace
+        if [ -n "$network" ]; then
+            echo "Joining network: $network"
+            zerotier-cli join "$network"
+        fi
+    done
+
     sleep 2
     echo "Network status:"
     zerotier-cli listnetworks
 fi
 
-# Ждём появления интерфейса
-echo "Waiting for ZeroTier interface..."
-while true; do
-    ZT_IF=$(ip -o link | awk -F': ' '/zt/ {print $2; exit}')
-    if [ -n "$ZT_IF" ]; then
-        echo "ZeroTier interface: $ZT_IF"
-        break
-    fi
-    sleep 1
-done
+# Подсчитываем количество сетей
+IFS=',' read -ra NETWORKS <<< "$ZT_NETWORK"
+EXPECTED_NETWORKS=${#NETWORKS[@]}
+echo "Expected ZeroTier networks: $EXPECTED_NETWORKS"
 
-# Ждём присвоения IP
-echo "Waiting for IP assignment..."
+# Ждём появления всех интерфейсов
+echo "Waiting for ZeroTier interface(s)..."
 attempt=0
 while [ $attempt -lt 60 ]; do
-    ZT_IP=$(ip -o -4 addr show dev "$ZT_IF" | awk '{print $4}' | cut -d/ -f1)
-    if [ -n "$ZT_IP" ]; then
-        echo "ZeroTier IP: $ZT_IP"
+    # Получаем все ZeroTier интерфейсы
+    ZT_INTERFACES=($(ip -o link | awk -F': ' '/zt/ {print $2}'))
+    CURRENT_COUNT=${#ZT_INTERFACES[@]}
+
+    if [ $CURRENT_COUNT -ge $EXPECTED_NETWORKS ]; then
+        echo "Found $CURRENT_COUNT ZeroTier interface(s): ${ZT_INTERFACES[*]}"
         break
     fi
+
+    echo "Waiting for interfaces... ($CURRENT_COUNT/$EXPECTED_NETWORKS)"
     sleep 2
     attempt=$((attempt+1))
 done
 
-if [ -z "$ZT_IP" ]; then
-    echo "✗ Failed to get ZeroTier IP"
+if [ ${#ZT_INTERFACES[@]} -eq 0 ]; then
+    echo "✗ No ZeroTier interfaces found"
     exit 1
 fi
+
+# Для обратной совместимости: ZT_IF = первый интерфейс
+ZT_IF="${ZT_INTERFACES[0]}"
+echo "Primary ZeroTier interface: $ZT_IF"
+
+# Ждём присвоения IP на всех интерфейсах
+echo "Waiting for IP assignment on all interfaces..."
+attempt=0
+ALL_IPS_ASSIGNED=false
+
+while [ $attempt -lt 60 ]; do
+    ALL_IPS_ASSIGNED=true
+    ZT_IPS=()
+
+    for iface in "${ZT_INTERFACES[@]}"; do
+        iface_ip=$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+        if [ -n "$iface_ip" ]; then
+            ZT_IPS+=("$iface:$iface_ip")
+        else
+            ALL_IPS_ASSIGNED=false
+            echo "Waiting for IP on $iface..."
+        fi
+    done
+
+    if [ "$ALL_IPS_ASSIGNED" = true ] && [ ${#ZT_IPS[@]} -ge $EXPECTED_NETWORKS ]; then
+        echo "All IPs assigned:"
+        for ip_info in "${ZT_IPS[@]}"; do
+            echo "  $ip_info"
+        done
+        break
+    fi
+
+    sleep 2
+    attempt=$((attempt+1))
+done
+
+if [ "$ALL_IPS_ASSIGNED" != true ]; then
+    echo "⚠️  Warning: Not all interfaces have IP addresses assigned"
+fi
+
+# Для обратной совместимости: ZT_IP = IP первого интерфейса
+ZT_IP=$(ip -o -4 addr show dev "$ZT_IF" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+if [ -z "$ZT_IP" ]; then
+    echo "✗ Failed to get ZeroTier IP for primary interface"
+    exit 1
+fi
+echo "Primary ZeroTier IP: $ZT_IP"
 
 # Включаем IP форвардинг
 echo "Enabling IP forwarding..."
@@ -361,7 +414,7 @@ setup_firewall
 # Применяем кастомные маршруты
 apply_custom_routes
 
-# Разрешаем трафик на ZeroTier интерфейсе для hybrid/gateway режимов
+# Разрешаем трафик на ZeroTier интерфейсах для hybrid/gateway режимов
 if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
     echo "Adding ZeroTier interface rules for $GATEWAY_MODE mode..."
 
@@ -378,9 +431,18 @@ if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
         iptables -I FORWARD -j ZEROTIER_FORWARD
     fi
 
-    iptables -I ZEROTIER_INPUT -i "$ZT_IF" -j ACCEPT
-    iptables -I ZEROTIER_FORWARD -i "$ZT_IF" -o "$ZT_IF" -j ACCEPT
-    echo "✓ ZeroTier internal traffic allowed"
+    # Добавляем правила для всех ZeroTier интерфейсов
+    for zt_iface in "${ZT_INTERFACES[@]}"; do
+        echo "Adding rules for interface: $zt_iface"
+        iptables -I ZEROTIER_INPUT -i "$zt_iface" -j ACCEPT
+
+        # Разрешаем форвардинг между всеми ZeroTier интерфейсами
+        for zt_iface2 in "${ZT_INTERFACES[@]}"; do
+            iptables -I ZEROTIER_FORWARD -i "$zt_iface" -o "$zt_iface2" -j ACCEPT
+        done
+    done
+
+    echo "✓ ZeroTier internal traffic allowed on ${#ZT_INTERFACES[@]} interface(s)"
 fi
 
 # Диагностика DNS после настройки firewall
@@ -480,8 +542,10 @@ if [ -n "$PORT_FORWARD" ]; then
                 # Открываем порты в зависимости от режима
                 case $GATEWAY_MODE in
                     "false")
-                        echo "Backend mode: opening port $EXT_PORT on ZeroTier interface only"
-                        iptables -I ZEROTIER_INPUT -i "$ZT_IF" -p tcp --dport $EXT_PORT -j ACCEPT
+                        echo "Backend mode: opening port $EXT_PORT on ZeroTier interfaces only"
+                        for zt_iface in "${ZT_INTERFACES[@]}"; do
+                            iptables -I ZEROTIER_INPUT -i "$zt_iface" -p tcp --dport $EXT_PORT -j ACCEPT
+                        done
                         ;;
                     "true")
                         echo "Gateway mode: opening port $EXT_PORT for external access"
@@ -505,7 +569,9 @@ if [ -n "$PORT_FORWARD" ]; then
                         else
                             iptables -I ZEROTIER_INPUT -p tcp --dport $EXT_PORT -j ACCEPT
                         fi
-                        iptables -I ZEROTIER_INPUT -i "$ZT_IF" -p tcp --dport $EXT_PORT -j ACCEPT
+                        for zt_iface in "${ZT_INTERFACES[@]}"; do
+                            iptables -I ZEROTIER_INPUT -i "$zt_iface" -p tcp --dport $EXT_PORT -j ACCEPT
+                        done
                         add_docker_network_rules "$EXT_PORT"
                         ;;
                     *)
@@ -525,20 +591,30 @@ if [ -n "$PORT_FORWARD" ]; then
                 else
                     echo "Destination is local Docker address, using iptables DNAT"
                     if [ "$GATEWAY_MODE" = "false" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
-                        iptables -t nat -A PREROUTING -i "$ZT_IF" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
-
                         DEST_INTERFACE=$(get_interface_for_ip "$DEST_IP")
+
+                        # Создаём DNAT правила для всех ZeroTier интерфейсов
+                        for zt_iface in "${ZT_INTERFACES[@]}"; do
+                            echo "Adding DNAT rule for interface: $zt_iface"
+                            iptables -t nat -A PREROUTING -i "$zt_iface" -p tcp --dport $EXT_PORT -j DNAT --to-destination $DEST_IP:$DEST_PORT
+
+                            if [ -n "$DEST_INTERFACE" ]; then
+                                iptables -A FORWARD -i "$zt_iface" -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
+                                iptables -A FORWARD -i "$DEST_INTERFACE" -o "$zt_iface" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
+                            else
+                                echo "⚠️  Could not determine interface for $DEST_IP, using eth0"
+                                iptables -A FORWARD -i "$zt_iface" -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
+                                iptables -A FORWARD -i eth0 -o "$zt_iface" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
+                            fi
+                        done
+
+                        # MASQUERADE правило нужно только одно (не зависит от входящего интерфейса)
                         if [ -n "$DEST_INTERFACE" ]; then
                             iptables -t nat -A POSTROUTING -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
-                            iptables -A FORWARD -i "$ZT_IF" -o "$DEST_INTERFACE" -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
-                            iptables -A FORWARD -i "$DEST_INTERFACE" -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
-                            echo "✓ iptables DNAT configured for $DEST_IP via interface $DEST_INTERFACE"
+                            echo "✓ iptables DNAT configured for $DEST_IP via interface $DEST_INTERFACE (${#ZT_INTERFACES[@]} ZeroTier interfaces)"
                         else
-                            echo "⚠️  Could not determine interface for $DEST_IP, using eth0"
                             iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j MASQUERADE
-                            iptables -A FORWARD -i "$ZT_IF" -o eth0 -p tcp -d $DEST_IP --dport $DEST_PORT -j ACCEPT
-                            iptables -A FORWARD -i eth0 -o "$ZT_IF" -p tcp -s $DEST_IP --sport $DEST_PORT -j ACCEPT
-                            echo "✓ iptables DNAT configured for $DEST_IP via default eth0"
+                            echo "✓ iptables DNAT configured for $DEST_IP via default eth0 (${#ZT_INTERFACES[@]} ZeroTier interfaces)"
                         fi
                     fi
                 fi
