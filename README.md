@@ -237,6 +237,23 @@ PORT_FORWARD=873:172.26.0.3:873,22:172.26.0.4:22,80:172.26.0.5:8080
 PORT_FORWARD=8989:10.121.15.16:8989,443:10.121.15.20:443
 ```
 
+**⚠️ IMPORTANT - Gateway Mode Port Exposure**:
+
+In **Gateway Mode**, the **first port** in `PORT_FORWARD` (EXTERNAL_PORT) **MUST be published** in the `ports:` section of `docker-compose.yml`. Otherwise, internet clients won't be able to connect!
+
+**Example**:
+```yaml
+# In docker-compose.yml:
+ports:
+  - "8989:8989"  # ✅ REQUIRED - matches PORT_FORWARD first port
+  - "443:443"    # ✅ REQUIRED - matches PORT_FORWARD first port
+
+# In .env:
+PORT_FORWARD=8989:10.121.15.16:8989,443:10.121.15.20:443
+```
+
+**Backend Mode** does NOT require port publishing - traffic flows through ZeroTier network internally.
+
 **Container Name Resolution**:
 - Container names are automatically resolved to IPs at startup
 - Works with containers in the same Docker network
