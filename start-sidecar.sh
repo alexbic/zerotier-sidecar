@@ -72,24 +72,38 @@ pre_resolve_port_forward() {
         return 0
     fi
 
-    # Wait for Docker DNS to be ready
-    echo "Waiting for Docker DNS to be ready..."
-    local dns_ready=false
-    local attempt=0
-    while [ $attempt -lt 10 ]; do
-        if getent hosts host.docker.internal >/dev/null 2>&1 || \
-           getent hosts gateway.docker.internal >/dev/null 2>&1 || \
-           nslookup -timeout=1 localhost 127.0.0.11 >/dev/null 2>&1; then
-            dns_ready=true
-            echo "✓ Docker DNS is ready"
+    # Check if there are any hostnames to resolve (not just IPs)
+    local has_hostnames=false
+    IFS=',' read -ra _CHECK <<< "$PORT_FORWARD"
+    for f in "${_CHECK[@]}"; do
+        IFS=':' read -ra P <<< "$f"
+        DST=${P[1]}
+        if [[ -n "$DST" ]] && ! [[ "$DST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            has_hostnames=true
             break
         fi
-        sleep 1
-        attempt=$((attempt+1))
     done
 
-    if [ "$dns_ready" = false ]; then
-        echo "⚠️  Warning: Docker DNS not responding, will try to resolve anyway"
+    # Only wait for Docker DNS if we have hostnames to resolve
+    if [ "$has_hostnames" = true ]; then
+        echo "Waiting for Docker DNS to be ready..."
+        local dns_ready=false
+        local attempt=0
+        while [ $attempt -lt 10 ]; do
+            if getent hosts host.docker.internal >/dev/null 2>&1 || \
+               getent hosts gateway.docker.internal >/dev/null 2>&1 || \
+               nslookup -timeout=1 localhost 127.0.0.11 >/dev/null 2>&1; then
+                dns_ready=true
+                echo "✓ Docker DNS is ready"
+                break
+            fi
+            sleep 1
+            attempt=$((attempt+1))
+        done
+
+        if [ "$dns_ready" = false ]; then
+            echo "⚠️  Warning: Docker DNS not responding, will try to resolve anyway"
+        fi
     fi
 
     local new_forwards=""
@@ -112,16 +126,16 @@ pre_resolve_port_forward() {
         # Retry resolution multiple times for container names
         local ipaddr=""
         local resolve_attempt=0
-        while [ $resolve_attempt -lt 5 ]; do
+        while [ $resolve_attempt -lt 3 ]; do
             if ipaddr=$(resolve_name_to_ip "$DST"); then
                 echo "(pre-resolve) $DST -> $ipaddr"
                 new_forwards+="$EXT:$ipaddr:$DPT,"
                 break
             fi
             resolve_attempt=$((resolve_attempt+1))
-            if [ $resolve_attempt -lt 5 ]; then
-                echo "Retrying resolve for $DST (attempt $((resolve_attempt+1))/5)..."
-                sleep 2
+            if [ $resolve_attempt -lt 3 ]; then
+                echo "Retrying resolve for $DST (attempt $((resolve_attempt+1))/3)..."
+                sleep 1
             fi
         done
 
@@ -551,16 +565,16 @@ if [ -n "$PORT_FORWARD" ]; then
         RESOLVED_IP=""
         # Retry resolution with backoff
         retry_attempt=0
-        while [ $retry_attempt -lt 5 ]; do
+        while [ $retry_attempt -lt 3 ]; do
             if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
                 echo "Resolved $RAW_DEST -> $RESOLVED_IP"
                 RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
                 break
             fi
             retry_attempt=$((retry_attempt+1))
-            if [ $retry_attempt -lt 5 ]; then
-                echo "Failed to resolve $RAW_DEST, retrying (attempt $((retry_attempt+1))/5)..."
-                sleep 2
+            if [ $retry_attempt -lt 3 ]; then
+                echo "Failed to resolve $RAW_DEST, retrying (attempt $((retry_attempt+1))/3)..."
+                sleep 1
             fi
         done
 
