@@ -72,6 +72,26 @@ pre_resolve_port_forward() {
         return 0
     fi
 
+    # Wait for Docker DNS to be ready
+    echo "Waiting for Docker DNS to be ready..."
+    local dns_ready=false
+    local attempt=0
+    while [ $attempt -lt 10 ]; do
+        if getent hosts host.docker.internal >/dev/null 2>&1 || \
+           getent hosts gateway.docker.internal >/dev/null 2>&1 || \
+           nslookup -timeout=1 localhost 127.0.0.11 >/dev/null 2>&1; then
+            dns_ready=true
+            echo "✓ Docker DNS is ready"
+            break
+        fi
+        sleep 1
+        attempt=$((attempt+1))
+    done
+
+    if [ "$dns_ready" = false ]; then
+        echo "⚠️  Warning: Docker DNS not responding, will try to resolve anyway"
+    fi
+
     local new_forwards=""
     IFS=',' read -ra _FORW <<< "$PORT_FORWARD"
     for f in "${_FORW[@]}"; do
@@ -89,10 +109,25 @@ pre_resolve_port_forward() {
             continue
         fi
 
-        if ipaddr=$(resolve_name_to_ip "$DST"); then
-            echo "(pre-resolve) $DST -> $ipaddr"
-            new_forwards+="$EXT:$ipaddr:$DPT,"
-        else
+        # Retry resolution multiple times for container names
+        local ipaddr=""
+        local resolve_attempt=0
+        while [ $resolve_attempt -lt 5 ]; do
+            if ipaddr=$(resolve_name_to_ip "$DST"); then
+                echo "(pre-resolve) $DST -> $ipaddr"
+                new_forwards+="$EXT:$ipaddr:$DPT,"
+                break
+            fi
+            resolve_attempt=$((resolve_attempt+1))
+            if [ $resolve_attempt -lt 5 ]; then
+                echo "Retrying resolve for $DST (attempt $((resolve_attempt+1))/5)..."
+                sleep 2
+            fi
+        done
+
+        # If still not resolved, keep the name (will be resolved later)
+        if [ -z "$ipaddr" ]; then
+            echo "⚠️  Could not pre-resolve $DST, will retry during setup"
             new_forwards+="$EXT:$DST:$DPT,"
         fi
     done
@@ -514,10 +549,22 @@ if [ -n "$PORT_FORWARD" ]; then
         fi
 
         RESOLVED_IP=""
-        if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
-            echo "Resolved $RAW_DEST -> $RESOLVED_IP"
-            RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
-        else
+        # Retry resolution with backoff
+        local retry_attempt=0
+        while [ $retry_attempt -lt 5 ]; do
+            if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
+                echo "Resolved $RAW_DEST -> $RESOLVED_IP"
+                RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
+                break
+            fi
+            retry_attempt=$((retry_attempt+1))
+            if [ $retry_attempt -lt 5 ]; then
+                echo "Failed to resolve $RAW_DEST, retrying (attempt $((retry_attempt+1))/5)..."
+                sleep 2
+            fi
+        done
+
+        if [ -z "$RESOLVED_IP" ]; then
             echo "✗ Cannot resolve destination: $RAW_DEST. Skipping rule $EXT_PORT:$RAW_DEST:$DEST_PORT"
         fi
     done
