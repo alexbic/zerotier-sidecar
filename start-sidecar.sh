@@ -550,7 +550,7 @@ if [ -n "$PORT_FORWARD" ]; then
 
         RESOLVED_IP=""
         # Retry resolution with backoff
-        local retry_attempt=0
+        retry_attempt=0
         while [ $retry_attempt -lt 5 ]; do
             if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
                 echo "Resolved $RAW_DEST -> $RESOLVED_IP"
