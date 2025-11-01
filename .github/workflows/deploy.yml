@@ -1,4 +1,4 @@
-name: 🚀 Deploy Zerotier Sidecar
+name: 🚀 Deploy - Production Release
 on:
   # Автоматический deploy после успешных тестов
   repository_dispatch:
