@@ -31,7 +31,7 @@ jobs:
           echo "Actor: ${{ github.actor }}"
 
       - name: 🔔 Trigger test workflow in test repository
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@v2
         with:
           token: ${{ secrets.TEST_REPO_PAT }}
           repository: alexbic/zerotier-sidecar-test
