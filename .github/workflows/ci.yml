@@ -1,4 +1,4 @@
-name: 🔄 CI - Trigger Tests
+name: CI - Trigger Tests
 
 on:
   push:
