@@ -143,12 +143,7 @@ jobs:
             BASE_TAG="latest"
             IS_RELEASE_BRANCH=true
             IS_PRERELEASE=false
-            PRODUCT_NAME="ZeroTier Sidecar Core"
-          elif [ "$BRANCH" = "gateway" ]; then
-            BASE_TAG="gateway"
-            IS_RELEASE_BRANCH=true
-            IS_PRERELEASE=false
-            PRODUCT_NAME="ZeroTier Sidecar Gateway"
+            PRODUCT_NAME="ZeroTier Sidecar"
           else
             BASE_TAG="dev"
             IS_RELEASE_BRANCH=false
@@ -205,12 +200,11 @@ jobs:
           echo "Calculating version..."
           
           BRANCH="${GITHUB_REF_NAME}"
-          
+
           # Определяем префикс версии для разных веток
+          # main = v2.x (Gateway с обратной совместимостью)
+          # v1.x (Core) доступен через тег 'core'
           if [ "$BRANCH" = "main" ]; then
-            VERSION_PREFIX="v1"
-            TAG_PATTERN="v1.*"
-          elif [ "$BRANCH" = "gateway" ]; then
             VERSION_PREFIX="v2"
             TAG_PATTERN="v2.*"
           else
@@ -383,10 +377,9 @@ jobs:
           CUSTOM_RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
 
           # Определяем паттерн тегов для changelog
+          # main = v2.x (Gateway), v1.x (Core) доступен через тег 'core'
           BRANCH="${GITHUB_REF_NAME}"
           if [ "$BRANCH" = "main" ]; then
-            TAG_PATTERN="v1.*"
-          elif [ "$BRANCH" = "gateway" ]; then
             TAG_PATTERN="v2.*"
           else
             TAG_PATTERN="v0.*"

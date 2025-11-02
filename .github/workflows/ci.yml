@@ -4,13 +4,11 @@ on:
   push:
     branches:
       - main
-      - gateway
     tags-ignore:
       - '**'
   pull_request:
     branches:
       - main
-      - gateway
 
 permissions:
   contents: read
@@ -45,7 +43,7 @@ jobs:
               "source_sha": "${{ github.sha }}",
               "source_actor": "${{ github.actor }}",
               "source_event": "${{ github.event_name }}",
-              "auto_deploy": "${{ github.event_name == 'push' && (github.ref_name == 'main' || github.ref_name == 'gateway') }}"
+              "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"
             }
 
       - name: 📊 Tests triggered
