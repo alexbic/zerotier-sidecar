@@ -27,7 +27,15 @@ jobs:
           token: ${{ secrets.TEST_REPO_PAT }}
           repository: alexbic/zerotier-sidecar-test
           event-type: test-and-deploy
-          client-payload: '{"source_repo": "${{ github.repository }}", "source_branch": "${{ github.ref_name }}", "source_sha": "${{ github.sha }}", "source_actor": "${{ github.actor }}", "source_event": "${{ github.event_name }}", "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"}'
+          client-payload: >-
+            {
+              "source_repo": "${{ github.repository }}",
+              "source_branch": "${{ github.ref_name }}",
+              "source_sha": "${{ github.sha }}",
+              "source_actor": "${{ github.actor }}",
+              "source_event": "${{ github.event_name }}",
+              "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"
+            }
 
       - name: Tests triggered
         run: echo "✅ Tests triggered in alexbic/zerotier-sidecar-test"
