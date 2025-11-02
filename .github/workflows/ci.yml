@@ -22,18 +22,20 @@ jobs:
           echo "Branch: ${{ github.ref_name }}"
 
       - name: Trigger test workflow
-        env:
-          GH_TOKEN: ${{ secrets.TEST_REPO_PAT }}
-        run: |
-          gh api repos/alexbic/zerotier-sidecar-test/dispatches \
-            -X POST \
-            -f event_type='test-and-deploy' \
-            -f client_payload[source_repo]='${{ github.repository }}' \
-            -f client_payload[source_branch]='${{ github.ref_name }}' \
-            -f client_payload[source_sha]='${{ github.sha }}' \
-            -f client_payload[source_actor]='${{ github.actor }}' \
-            -f client_payload[source_event]='${{ github.event_name }}' \
-            -f client_payload[auto_deploy]='${{ github.event_name == 'push' && github.ref_name == 'main' }}'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TEST_REPO_PAT }}
+          repository: alexbic/zerotier-sidecar-test
+          event-type: test-and-deploy
+          client-payload: |-
+            {
+              "source_repo": "${{ github.repository }}",
+              "source_branch": "${{ github.ref_name }}",
+              "source_sha": "${{ github.sha }}",
+              "source_actor": "${{ github.actor }}",
+              "source_event": "${{ github.event_name }}",
+              "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"
+            }
 
       - name: Tests triggered
         run: echo "✅ Tests triggered in alexbic/zerotier-sidecar-test"
