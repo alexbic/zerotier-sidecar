@@ -19,9 +19,19 @@ resolve_name_to_ip() {
         return 0
     fi
 
+    # Try getent first (uses NSS which includes Docker DNS)
     if command -v getent >/dev/null 2>&1; then
-        ip=$(getent hosts "$name" | awk '{print $1; exit}' || true)
-        if [ -n "$ip" ]; then
+        ip=$(getent hosts "$name" 2>/dev/null | awk '{print $1; exit}' || true)
+        if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    fi
+
+    # Try nslookup with Docker DNS directly
+    if command -v nslookup >/dev/null 2>&1; then
+        ip=$(nslookup "$name" 127.0.0.11 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | head -1 || true)
+        if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "$ip"
             return 0
         fi
@@ -29,8 +39,8 @@ resolve_name_to_ip() {
 
     # fallback to ping (least preferred)
     if command -v ping >/dev/null 2>&1; then
-        ip=$(ping -c1 "$name" 2>/dev/null | head -1 | awk -F'[()]' '{print $2}' || true)
-        if [ -n "$ip" ]; then
+        ip=$(ping -c1 -W1 "$name" 2>/dev/null | head -1 | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -1 || true)
+        if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "$ip"
             return 0
         fi
@@ -566,20 +576,26 @@ if [ -n "$PORT_FORWARD" ]; then
         # Retry resolution with backoff
         retry_attempt=0
         while [ $retry_attempt -lt 3 ]; do
+            echo "Attempting to resolve '$RAW_DEST' (attempt $((retry_attempt+1))/3)..."
             if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
-                echo "Resolved $RAW_DEST -> $RESOLVED_IP"
+                echo "✓ Resolved $RAW_DEST -> $RESOLVED_IP"
                 RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
                 break
             fi
             retry_attempt=$((retry_attempt+1))
             if [ $retry_attempt -lt 3 ]; then
-                echo "Failed to resolve $RAW_DEST, retrying (attempt $((retry_attempt+1))/3)..."
-                sleep 1
+                echo "⚠️  Failed to resolve '$RAW_DEST', retrying in 2 seconds..."
+                sleep 2
             fi
         done
 
         if [ -z "$RESOLVED_IP" ]; then
-            echo "✗ Cannot resolve destination: $RAW_DEST. Skipping rule $EXT_PORT:$RAW_DEST:$DEST_PORT"
+            echo "✗ ERROR: Cannot resolve destination: '$RAW_DEST' after 3 attempts"
+            echo "✗ Skipping rule $EXT_PORT:$RAW_DEST:$DEST_PORT"
+            echo "✗ Please check:"
+            echo "  - Container '$RAW_DEST' exists and is running"
+            echo "  - Container is in the same Docker network"
+            echo "  - Docker DNS is working (127.0.0.11)"
         fi
     done
 
