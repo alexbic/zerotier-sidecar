@@ -20,11 +20,12 @@ Docker images are available on both **Docker Hub** and **GitHub Container Regist
 
 **Docker Hub**: [`alexbic/zerotier-sidecar`](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 ```bash
-# Pull the gateway-enabled version
-docker pull alexbic/zerotier-sidecar:gateway
-
-# Or use latest tag (points to gateway)
+# Pull the latest version (v2.x with Gateway support)
 docker pull alexbic/zerotier-sidecar:latest
+
+# Or pull legacy v1.x Core (backend-only mode)
+docker pull alexbic/zerotier-sidecar:core
+docker pull alexbic/zerotier-sidecar:v1.1.1
 ```
 
 **GitHub Container Registry**: [`ghcr.io/alexbic/zerotier-sidecar`](https://github.com/alexbic/zerotier-sidecar/pkgs/container/zerotier-sidecar)
@@ -449,6 +450,10 @@ docker exec zerotier-sidecar ps aux | grep socat
 
 ## 🔄 Migration from v1.x to v2.x
 
+### Version History
+- **v1.x Core** (Legacy): Backend-only mode - available via `core` and `v1.1.1` tags
+- **v2.x Gateway** (Current): Full Gateway support with backward compatibility
+
 ### Backward Compatibility
 All v1.x configurations work unchanged in v2.x:
 ```bash
@@ -463,6 +468,16 @@ PORT_FORWARD=873:172.26.0.3:873
 # Add gateway functionality to existing setup
 GATEWAY_MODE=true  # Enable gateway mode
 ALLOWED_SOURCES=your.external.ip/32  # Restrict access
+```
+
+### Staying on v1.x Core
+If you prefer to stay on the legacy backend-only version:
+```bash
+# Use core tag (points to v1.1.1)
+docker pull alexbic/zerotier-sidecar:core
+
+# Or use explicit version
+docker pull alexbic/zerotier-sidecar:v1.1.1
 ```
 
 ## 🤝 Contributing
