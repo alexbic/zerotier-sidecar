@@ -27,7 +27,7 @@ jobs:
           token: ${{ secrets.TEST_REPO_PAT }}
           repository: alexbic/zerotier-sidecar-test
           event-type: test-and-deploy
-          client-payload: >-
+          client-payload: |-
             {
               "source_repo": "${{ github.repository }}",
               "source_branch": "${{ github.ref_name }}",
