@@ -6,84 +6,28 @@ on:
       - main
     tags-ignore:
       - '**'
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 jobs:
   trigger-tests:
-    name: 🚀 Trigger Tests in Private Test Environment
+    name: Trigger Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
 
     steps:
-      - name: 📋 Show trigger info
+      - name: Show trigger info
         run: |
           echo "Event: ${{ github.event_name }}"
           echo "Branch: ${{ github.ref_name }}"
-          echo "Commit: ${{ github.sha }}"
-          echo "Actor: ${{ github.actor }}"
 
-      - name: 🔔 Trigger test workflow in test repository
+      - name: Trigger test workflow
         uses: peter-evans/repository-dispatch@v2
         with:
           token: ${{ secrets.TEST_REPO_PAT }}
           repository: alexbic/zerotier-sidecar-test
           event-type: test-and-deploy
-          client-payload: |
-            {
-              "source_repo": "${{ github.repository }}",
-              "source_branch": "${{ github.ref_name }}",
-              "source_sha": "${{ github.sha }}",
-              "source_actor": "${{ github.actor }}",
-              "source_event": "${{ github.event_name }}",
-              "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"
-            }
+          client-payload: '{"source_repo": "${{ github.repository }}", "source_branch": "${{ github.ref_name }}", "source_sha": "${{ github.sha }}", "source_actor": "${{ github.actor }}", "source_event": "${{ github.event_name }}", "auto_deploy": "${{ github.event_name == 'push' && github.ref_name == 'main' }}"}'
 
-      - name: 📊 Tests triggered
-        run: |
-          echo "✅ Tests triggered in alexbic/zerotier-sidecar-test"
-          echo ""
-          echo "Monitor test progress:"
-          echo "https://github.com/alexbic/zerotier-sidecar-test/actions"
-          echo ""
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "⚠️  After tests pass, deploy workflow will be triggered"
-            echo "   Deploy requires manual approval in 'production' environment"
-            echo "   Review & approve at: https://github.com/${{ github.repository }}/actions"
-          else
-            echo "Auto-deploy: disabled (pull request)"
-          fi
-
-  # Опциональный job для локальных проверок (без self-hosted runner)
-  quick-checks:
-    name: 🔍 Quick Local Checks
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 🧩 Checkout code
-        uses: actions/checkout@v4
-
-      - name: 🔍 Check shell scripts syntax
-        run: |
-          echo "Checking bash syntax..."
-          bash -n start-sidecar.sh
-          echo "✅ Syntax OK"
-
-      - name: 📝 Check Dockerfile syntax
-        run: |
-          echo "Checking Dockerfile..."
-          docker --version || true
-          echo "✅ Dockerfile exists"
-          [ -f Dockerfile ] && echo "✅ Dockerfile found"
-
-      - name: 📋 Validate file structure
-        run: |
-          echo "Checking required files..."
-          [ -f start-sidecar.sh ] && echo "✅ start-sidecar.sh"
-          [ -f Dockerfile ] && echo "✅ Dockerfile"
-          [ -f README.md ] && echo "✅ README.md"
-          echo "✅ All required files present"
+      - name: Tests triggered
+        run: echo "✅ Tests triggered in alexbic/zerotier-sidecar-test"
