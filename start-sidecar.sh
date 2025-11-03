@@ -193,6 +193,9 @@ setup_firewall() {
     iptables -A ZEROTIER_INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A ZEROTIER_FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
+    # Разрешаем новые исходящие соединения через FORWARD (от Docker хостов к ZeroTier)
+    iptables -A ZEROTIER_FORWARD -m conntrack --ctstate NEW -j ACCEPT
+
     # Разрешаем ICMP (ping) на контейнер
     iptables -A ZEROTIER_INPUT -p icmp --icmp-type echo-request -j ACCEPT
     iptables -A ZEROTIER_FORWARD -p icmp -j ACCEPT
