@@ -253,6 +253,20 @@ add_docker_network_rules() {
     done
 }
 
+# Функция добавления правил логирования подключений
+add_connection_logging() {
+    local port="$1"
+    local dest_ip="$2"
+    local dest_port="$3"
+    local log_prefix="ZT-CONN-${port}"
+
+    # Логируем только NEW подключения (не весь трафик)
+    # Ограничиваем частоту: 3 сообщения в минуту для каждого порта
+    iptables -I ZEROTIER_INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW \
+        -m limit --limit 3/min --limit-burst 5 \
+        -j LOG --log-prefix "$log_prefix: " --log-level 6 2>/dev/null || true
+}
+
 # Функция проверки попадания IP в сеть
 ip_in_network() {
     local ip="$1"
@@ -561,6 +575,9 @@ echo "======================="
 echo ""
 
 # Настройка правил для проброса портов — сначала один раз резолвим имена
+# Создаём ассоциативный массив для хранения маппинга IP -> оригинальное имя
+declare -A IP_TO_NAME_MAP
+
 if [ -n "$PORT_FORWARD" ]; then
     echo "Resolving port forwarding destinations..."
     RESOLVED_FORWARDS=""
@@ -582,6 +599,8 @@ if [ -n "$PORT_FORWARD" ]; then
             echo "Attempting to resolve '$RAW_DEST' (attempt $((retry_attempt+1))/3)..."
             if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
                 echo "✓ Resolved $RAW_DEST -> $RESOLVED_IP"
+                # Сохраняем маппинг IP -> имя для логирования
+                IP_TO_NAME_MAP["$RESOLVED_IP"]="$RAW_DEST"
                 RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
                 break
             fi
@@ -659,6 +678,9 @@ if [ -n "$PORT_FORWARD" ]; then
                         exit 1
                         ;;
                 esac
+
+                # Добавляем логирование подключений для этого порта
+                add_connection_logging "$EXT_PORT" "$DEST_IP" "$DEST_PORT"
 
                 # Выбираем способ перенаправления
                 if is_zerotier_address "$DEST_IP"; then
@@ -794,18 +816,85 @@ echo "============================"
 echo ""
 echo "=== Starting Service Monitor ==="
 
+# Настройка логирования
+LOG_DIR="/var/log/zerotier-sidecar"
+LOG_FILE="$LOG_DIR/monitor.log"
+CONNECTION_LOG="$LOG_DIR/connections.log"
+MAX_LOG_SIZE=10485760  # 10MB
+MAX_LOG_FILES=5
+
+# Создаём директорию для логов
+mkdir -p "$LOG_DIR"
+
+# Функция логирования с timestamp
+log_message() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# Функция ротации логов
+rotate_logs() {
+    local logfile="$1"
+
+    if [ -f "$logfile" ] && [ $(stat -f%z "$logfile" 2>/dev/null || stat -c%s "$logfile" 2>/dev/null) -gt $MAX_LOG_SIZE ]; then
+        for i in $(seq $((MAX_LOG_FILES-1)) -1 1); do
+            if [ -f "${logfile}.$i" ]; then
+                mv "${logfile}.$i" "${logfile}.$((i+1))"
+            fi
+        done
+        mv "$logfile" "${logfile}.1"
+        touch "$logfile"
+        log_message "INFO" "Log rotated: $(basename $logfile)"
+    fi
+}
+
+# Хранилище состояния сервисов
+declare -A SERVICE_STATE
+declare -A SERVICE_LAST_SEEN
+
+# Функция для получения отображаемого имени (имя контейнера или IP)
+get_display_name() {
+    local ip="$1"
+    # Если есть маппинг, возвращаем имя, иначе IP
+    if [ -n "${IP_TO_NAME_MAP[$ip]}" ]; then
+        echo "${IP_TO_NAME_MAP[$ip]} ($ip)"
+    else
+        echo "$ip"
+    fi
+}
+
 # Функция проверки и восстановления правил для одного форварда
 check_and_restore_forward() {
     local ext_port="$1"
     local dest_ip="$2"
     local dest_port="$3"
     local is_zt_addr="$4"
+    local service_key="${ext_port}:${dest_ip}:${dest_port}"
+    local display_name=$(get_display_name "$dest_ip")
 
     # Проверяем доступность целевого сервиса
     if ! nc -z -w 2 "$dest_ip" "$dest_port" >/dev/null 2>&1; then
-        echo "⚠️  Service unavailable: $dest_ip:$dest_port (port $ext_port)"
+        # Сервис недоступен
+        if [ "${SERVICE_STATE[$service_key]}" != "down" ]; then
+            log_message "WARN" "Service DOWN: $display_name:$dest_port (port $ext_port)"
+            SERVICE_STATE[$service_key]="down"
+        fi
         return 1
     fi
+
+    # Сервис доступен - проверяем было ли восстановление
+    if [ "${SERVICE_STATE[$service_key]}" = "down" ]; then
+        log_message "INFO" "Service RESTORED: $display_name:$dest_port (port $ext_port) - service is back online"
+        SERVICE_STATE[$service_key]="up"
+    elif [ -z "${SERVICE_STATE[$service_key]}" ]; then
+        # Первая проверка
+        SERVICE_STATE[$service_key]="up"
+    fi
+
+    SERVICE_LAST_SEEN[$service_key]=$(date +%s)
 
     # Проверяем наличие правил iptables
     local rules_exist=false
@@ -823,8 +912,9 @@ check_and_restore_forward() {
     fi
 
     if [ "$rules_exist" = false ]; then
-        echo "🔧 Restoring rules for port $ext_port -> $dest_ip:$dest_port"
+        log_message "WARN" "Rules missing for port $ext_port -> $display_name:$dest_port - restoring..."
         restore_forward_rules "$ext_port" "$dest_ip" "$dest_port" "$is_zt_addr"
+        log_message "INFO" "Rules RESTORED: port $ext_port -> $display_name:$dest_port"
         return 2
     fi
 
@@ -926,17 +1016,21 @@ restore_forward_rules() {
 monitor_services() {
     local check_interval=30  # Проверка каждые 30 секунд
     local restore_count=0
+    local health_check_counter=0
 
-    echo "Monitor started: checking services every ${check_interval}s"
-    echo "Monitoring $(echo "$RESOLVED_FORWARDS" | tr ',' '\n' | wc -l) forward rules"
+    log_message "INFO" "Monitor started: checking services every ${check_interval}s"
+    log_message "INFO" "Monitoring $(echo "$RESOLVED_FORWARDS" | tr ',' '\n' | wc -l) forward rules"
 
     while true; do
         sleep "$check_interval"
 
+        # Ротация логов при необходимости
+        rotate_logs "$LOG_FILE"
+        rotate_logs "$CONNECTION_LOG"
+
         # Проверяем каждый форвард
         if [ -n "$RESOLVED_FORWARDS" ]; then
             IFS=',' read -ra FORWARDS <<< "$RESOLVED_FORWARDS"
-            local check_time=$(date '+%Y-%m-%d %H:%M:%S')
             local issues_found=false
 
             for forward in "${FORWARDS[@]}"; do
@@ -961,25 +1055,77 @@ monitor_services() {
                     elif [ $result -eq 2 ]; then
                         issues_found=true
                         restore_count=$((restore_count + 1))
-                        echo "[$check_time] ✓ Restored: port $EXT_PORT -> $DEST_IP:$DEST_PORT (total restorations: $restore_count)"
                     fi
                 fi
             done
 
-            if [ "$issues_found" = false ]; then
-                echo "[$check_time] ✓ All services healthy (${#FORWARDS[@]} rules checked)"
+            # Периодический health check log (каждые 10 проверок = 5 минут)
+            health_check_counter=$((health_check_counter + 1))
+            if [ "$issues_found" = false ] && [ $((health_check_counter % 10)) -eq 0 ]; then
+                log_message "INFO" "Health check: All services healthy (${#FORWARDS[@]} rules checked, $restore_count total restorations)"
             fi
         fi
     done
 }
 
-# Запускаем мониторинг в фоне
+# Фоновый процесс для парсинга iptables логов
+monitor_connections() {
+    local last_position=0
+
+    # Определяем файл kernel log в зависимости от системы
+    local kern_log=""
+    if [ -f "/var/log/kern.log" ]; then
+        kern_log="/var/log/kern.log"
+    elif [ -f "/var/log/messages" ]; then
+        kern_log="/var/log/messages"
+    else
+        log_message "WARN" "Kernel log file not found, connection logging disabled"
+        return
+    fi
+
+    log_message "INFO" "Connection monitor started, watching $kern_log"
+
+    while true; do
+        # Читаем новые строки из kernel log
+        if [ -f "$kern_log" ]; then
+            # Ищем строки с нашим префиксом ZT-CONN
+            tail -n 100 "$kern_log" 2>/dev/null | grep "ZT-CONN" | while read -r line; do
+                # Парсим строку и записываем в connection log
+                if [[ "$line" =~ ZT-CONN-([0-9]+):.*SRC=([0-9.]+).*DST=([0-9.]+).*DPT=([0-9]+) ]]; then
+                    local port="${BASH_REMATCH[1]}"
+                    local src="${BASH_REMATCH[2]}"
+                    local dst="${BASH_REMATCH[3]}"
+                    local dpt="${BASH_REMATCH[4]}"
+                    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+                    echo "[$timestamp] NEW CONNECTION: $src -> $dst:$dpt (port $port)" >> "$CONNECTION_LOG"
+                fi
+            done
+        fi
+
+        # Ротация connection log
+        rotate_logs "$CONNECTION_LOG"
+
+        sleep 10
+    done
+}
+
+# Запускаем мониторинг подключений в фоне
+monitor_connections &
+CONN_MONITOR_PID=$!
+
+# Запускаем мониторинг сервисов в фоне
 if [ -n "$RESOLVED_FORWARDS" ]; then
+    log_message "INFO" "Starting service monitor..."
     monitor_services &
     MONITOR_PID=$!
     echo "✓ Service monitor started (PID: $MONITOR_PID)"
     echo "  - Check interval: 30 seconds"
     echo "  - Auto-recovery: enabled"
+    echo "  - Log file: $LOG_FILE"
+    echo "  - Connection log: $CONNECTION_LOG"
+    echo "✓ Connection monitor started (PID: $CONN_MONITOR_PID)"
+    log_message "INFO" "Service monitor started (PID: $MONITOR_PID)"
+    log_message "INFO" "Connection monitor started (PID: $CONN_MONITOR_PID)"
 else
     echo "ℹ️  Service monitor not started (no port forwards configured)"
 fi
