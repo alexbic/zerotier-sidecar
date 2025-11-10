@@ -790,5 +790,202 @@ else
 fi
 echo "============================"
 
+# === SERVICE MONITORING AND AUTO-RECOVERY ===
+echo ""
+echo "=== Starting Service Monitor ==="
+
+# Функция проверки и восстановления правил для одного форварда
+check_and_restore_forward() {
+    local ext_port="$1"
+    local dest_ip="$2"
+    local dest_port="$3"
+    local is_zt_addr="$4"
+
+    # Проверяем доступность целевого сервиса
+    if ! nc -z -w 2 "$dest_ip" "$dest_port" >/dev/null 2>&1; then
+        echo "⚠️  Service unavailable: $dest_ip:$dest_port (port $ext_port)"
+        return 1
+    fi
+
+    # Проверяем наличие правил iptables
+    local rules_exist=false
+
+    if [ "$is_zt_addr" = "false" ]; then
+        # Для Docker сервисов проверяем DNAT правила
+        if iptables -t nat -L PREROUTING -n | grep -q "dpt:$ext_port.*to:$dest_ip:$dest_port"; then
+            rules_exist=true
+        fi
+    else
+        # Для ZeroTier сервисов проверяем socat процесс
+        if pgrep -f "socat.*TCP-LISTEN:$ext_port.*TCP:$dest_ip:$dest_port" >/dev/null 2>&1; then
+            rules_exist=true
+        fi
+    fi
+
+    if [ "$rules_exist" = false ]; then
+        echo "🔧 Restoring rules for port $ext_port -> $dest_ip:$dest_port"
+        restore_forward_rules "$ext_port" "$dest_ip" "$dest_port" "$is_zt_addr"
+        return 2
+    fi
+
+    return 0
+}
+
+# Функция восстановления правил
+restore_forward_rules() {
+    local ext_port="$1"
+    local dest_ip="$2"
+    local dest_port="$3"
+    local is_zt_addr="$4"
+
+    echo "  → Opening port $ext_port in firewall..."
+
+    # Восстанавливаем firewall правила в зависимости от режима
+    case $GATEWAY_MODE in
+        "false")
+            for zt_iface in "${ZT_INTERFACES[@]}"; do
+                iptables -I ZEROTIER_INPUT -i "$zt_iface" -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+            done
+            ;;
+        "true")
+            if [ "$ALLOWED_SOURCES" != "any" ]; then
+                IFS=',' read -ra SOURCES <<< "$ALLOWED_SOURCES"
+                for source in "${SOURCES[@]}"; do
+                    iptables -I ZEROTIER_INPUT -s "$source" -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+                done
+            else
+                iptables -I ZEROTIER_INPUT -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+            fi
+            add_docker_network_rules "$ext_port"
+            ;;
+        "hybrid")
+            if [ "$ALLOWED_SOURCES" != "any" ]; then
+                IFS=',' read -ra SOURCES <<< "$ALLOWED_SOURCES"
+                for source in "${SOURCES[@]}"; do
+                    iptables -I ZEROTIER_INPUT -s "$source" -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+                done
+            else
+                iptables -I ZEROTIER_INPUT -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+            fi
+            for zt_iface in "${ZT_INTERFACES[@]}"; do
+                iptables -I ZEROTIER_INPUT -i "$zt_iface" -p tcp --dport $ext_port -j ACCEPT 2>/dev/null || true
+            done
+            add_docker_network_rules "$ext_port"
+            ;;
+    esac
+
+    # Восстанавливаем перенаправление
+    if [ "$is_zt_addr" = "true" ]; then
+        echo "  → Starting socat proxy: $ext_port -> $dest_ip:$dest_port"
+        if [ "$GATEWAY_MODE" = "true" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
+            # Убиваем старый процесс если есть
+            pkill -f "socat.*TCP-LISTEN:$ext_port.*TCP:$dest_ip:$dest_port" 2>/dev/null || true
+            sleep 1
+            # Запускаем новый
+            socat TCP-LISTEN:$ext_port,bind=0.0.0.0,fork,reuseaddr TCP:$dest_ip:$dest_port &
+            echo "  ✓ Socat proxy restored"
+        fi
+    else
+        echo "  → Restoring iptables DNAT: $ext_port -> $dest_ip:$dest_port"
+        if [ "$GATEWAY_MODE" = "false" ] || [ "$GATEWAY_MODE" = "hybrid" ]; then
+            DEST_INTERFACE=$(get_interface_for_ip "$dest_ip")
+
+            # Создаём DNAT правила для всех ZeroTier интерфейсов
+            for zt_iface in "${ZT_INTERFACES[@]}"; do
+                # Проверяем, нет ли уже правила
+                if ! iptables -t nat -L PREROUTING -n | grep -q "dpt:$ext_port.*to:$dest_ip:$dest_port"; then
+                    iptables -t nat -A PREROUTING -i "$zt_iface" -p tcp --dport $ext_port -j DNAT --to-destination $dest_ip:$dest_port 2>/dev/null || true
+                fi
+
+                if [ -n "$DEST_INTERFACE" ]; then
+                    iptables -A FORWARD -i "$zt_iface" -o "$DEST_INTERFACE" -p tcp -d $dest_ip --dport $dest_port -j ACCEPT 2>/dev/null || true
+                    iptables -A FORWARD -i "$DEST_INTERFACE" -o "$zt_iface" -p tcp -s $dest_ip --sport $dest_port -j ACCEPT 2>/dev/null || true
+                else
+                    iptables -A FORWARD -i "$zt_iface" -o eth0 -p tcp -d $dest_ip --dport $dest_port -j ACCEPT 2>/dev/null || true
+                    iptables -A FORWARD -i eth0 -o "$zt_iface" -p tcp -s $dest_ip --sport $dest_port -j ACCEPT 2>/dev/null || true
+                fi
+            done
+
+            # MASQUERADE правило
+            if [ -n "$DEST_INTERFACE" ]; then
+                if ! iptables -t nat -L POSTROUTING -n | grep -q "MASQUERADE.*$dest_ip.*dpt:$dest_port"; then
+                    iptables -t nat -A POSTROUTING -o "$DEST_INTERFACE" -p tcp -d $dest_ip --dport $dest_port -j MASQUERADE 2>/dev/null || true
+                fi
+            else
+                if ! iptables -t nat -L POSTROUTING -n | grep -q "MASQUERADE.*$dest_ip.*dpt:$dest_port"; then
+                    iptables -t nat -A POSTROUTING -o eth0 -p tcp -d $dest_ip --dport $dest_port -j MASQUERADE 2>/dev/null || true
+                fi
+            fi
+
+            echo "  ✓ iptables DNAT rules restored"
+        fi
+    fi
+}
+
+# Фоновый процесс мониторинга
+monitor_services() {
+    local check_interval=30  # Проверка каждые 30 секунд
+    local restore_count=0
+
+    echo "Monitor started: checking services every ${check_interval}s"
+    echo "Monitoring $(echo "$RESOLVED_FORWARDS" | tr ',' '\n' | wc -l) forward rules"
+
+    while true; do
+        sleep "$check_interval"
+
+        # Проверяем каждый форвард
+        if [ -n "$RESOLVED_FORWARDS" ]; then
+            IFS=',' read -ra FORWARDS <<< "$RESOLVED_FORWARDS"
+            local check_time=$(date '+%Y-%m-%d %H:%M:%S')
+            local issues_found=false
+
+            for forward in "${FORWARDS[@]}"; do
+                IFS=':' read -ra PARTS <<< "$forward"
+                EXT_PORT=${PARTS[0]}
+                DEST_IP=${PARTS[1]}
+                DEST_PORT=${PARTS[2]}
+
+                if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
+                    # Определяем тип адреса
+                    local is_zt="false"
+                    if is_zerotier_address "$DEST_IP" >/dev/null 2>&1; then
+                        is_zt="true"
+                    fi
+
+                    # Проверяем и восстанавливаем при необходимости
+                    check_and_restore_forward "$EXT_PORT" "$DEST_IP" "$DEST_PORT" "$is_zt"
+                    local result=$?
+
+                    if [ $result -eq 1 ]; then
+                        issues_found=true
+                    elif [ $result -eq 2 ]; then
+                        issues_found=true
+                        restore_count=$((restore_count + 1))
+                        echo "[$check_time] ✓ Restored: port $EXT_PORT -> $DEST_IP:$DEST_PORT (total restorations: $restore_count)"
+                    fi
+                fi
+            done
+
+            if [ "$issues_found" = false ]; then
+                echo "[$check_time] ✓ All services healthy (${#FORWARDS[@]} rules checked)"
+            fi
+        fi
+    done
+}
+
+# Запускаем мониторинг в фоне
+if [ -n "$RESOLVED_FORWARDS" ]; then
+    monitor_services &
+    MONITOR_PID=$!
+    echo "✓ Service monitor started (PID: $MONITOR_PID)"
+    echo "  - Check interval: 30 seconds"
+    echo "  - Auto-recovery: enabled"
+else
+    echo "ℹ️  Service monitor not started (no port forwards configured)"
+fi
+
+echo "===================================="
+echo ""
+
 # Держим контейнер запущенным
 tail -f /dev/null
