@@ -1,3 +1,18 @@
+# ZeroTier Sidecar - Docker Compose Configuration
+#
+# NEW in v2.1.4: Comprehensive Logging System
+# - Service monitoring logs: /var/log/zerotier-sidecar/monitor.log
+# - Connection tracking logs: /var/log/zerotier-sidecar/connections.log
+# - Automatic log rotation (10MB limit, 5 historical files)
+# - Container names displayed in logs instead of IP addresses
+#
+# Logs are accessible via:
+#   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
+#   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/connections.log
+#
+# Or mount the logs volume to persist logs on host:
+#   /opt/zerotier-sidecar-logs:/var/log/zerotier-sidecar
+
 version: "3.8"
 
 services:
@@ -9,7 +24,8 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - /opt/zerotier-sidecar:/var/lib/zerotier-one
+      - /opt/zerotier-sidecar:/var/lib/zerotier-one           # ZeroTier identity and configuration
+      - /opt/zerotier-sidecar-logs:/var/log/zerotier-sidecar  # Monitoring logs (NEW in v2.1.4!)
     networks:
       - default
     env_file:

@@ -54,6 +54,14 @@ docker pull ghcr.io/alexbic/zerotier-sidecar:latest
 - **🔒 Source Filtering**: IP-based access control
 - **📊 Real-time Monitoring**: Detailed logging and configuration tracking
 
+### Monitoring & Reliability (NEW in v2.1.4!)
+- **📝 Comprehensive Logging**: Service monitoring and connection tracking logs
+- **🔄 Auto-Recovery**: Automatic restoration of missing iptables/socat rules
+- **💚 Health Checks**: Continuous service availability monitoring (every 30s)
+- **📊 Container Name Display**: Shows original container names in logs
+- **🔁 Log Rotation**: Automatic rotation (10MB limit, 5 historical files)
+- **⚠️ State Tracking**: Detects and logs service state changes
+
 ## 🎯 Use Cases
 
 ### Backend Mode (Traditional)
@@ -119,7 +127,8 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - ./sidecar-data:/var/lib/zerotier-one
+      - ./sidecar-data:/var/lib/zerotier-one      # ZeroTier identity
+      - ./sidecar-logs:/var/log/zerotier-sidecar  # Monitoring logs (NEW!)
     networks:
       - default
     env_file:
@@ -403,10 +412,109 @@ server {
 
 ## 📊 Monitoring and Troubleshooting
 
+### Logging System (NEW in v2.1.4!)
+
+ZeroTier Sidecar includes comprehensive logging for monitoring service health and tracking connections:
+
+#### Log Files
+
+All logs are stored in `/var/log/zerotier-sidecar/` inside the container:
+
+| Log File | Purpose | Content |
+|----------|---------|---------|
+| `monitor.log` | Service monitoring | Service status, health checks, rules restoration |
+| `connections.log` | Connection tracking | New TCP connections with timestamps |
+
+#### Log Features
+
+- **🔍 Container Name Display**: Shows original container names (e.g., `rsync-server (172.22.0.3)`)
+- **🔄 Automatic Log Rotation**: Max 10MB per file, keeps 5 historical files
+- **⏱️ Timestamped Events**: All events include precise timestamps
+- **📊 Health Checks**: Periodic status reports every 5 minutes
+- **🔧 Auto-Recovery Logging**: Tracks service downs and restorations
+
+#### Log Examples
+
+**Monitor Log** (`/var/log/zerotier-sidecar/monitor.log`):
+```
+[2025-11-10 19:20:15] [INFO] Service monitor started (PID: 427)
+[2025-11-10 19:20:15] [INFO] Monitoring 6 forward rules
+[2025-11-10 19:20:45] [WARN] Service DOWN: rsync-server (172.22.0.3):873 (port 873)
+[2025-11-10 19:21:15] [INFO] Service RESTORED: rsync-server (172.22.0.3):873 (port 873) - service is back online
+[2025-11-10 19:22:30] [WARN] Rules missing for port 8989 -> sonarr (10.121.15.16):8989 - restoring...
+[2025-11-10 19:22:31] [INFO] Rules RESTORED: port 8989 -> sonarr (10.121.15.16):8989
+[2025-11-10 19:25:45] [INFO] Health check: All services healthy (6 rules checked, 1 total restorations)
+```
+
+**Connection Log** (`/var/log/zerotier-sidecar/connections.log`):
+```
+[2025-11-10 19:22:30] NEW CONNECTION: 10.121.15.10 -> 172.22.0.3:873 (port 873)
+[2025-11-10 19:23:15] NEW CONNECTION: 203.0.113.50 -> 10.121.15.16:8989 (port 8989)
+[2025-11-10 19:24:00] NEW CONNECTION: 10.121.15.20 -> 192.168.88.28:9999 (port 9999)
+```
+
+#### Accessing Logs
+
+**Mount logs as volume** (recommended for production):
+```yaml
+services:
+  zerotier-sidecar:
+    image: alexbic/zerotier-sidecar:latest
+    volumes:
+      - zt-logs:/var/log/zerotier-sidecar  # Persist logs outside container
+
+volumes:
+  zt-logs:
+```
+
+**View logs in real-time**:
+```bash
+# Monitor service events
+docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
+
+# Monitor connections
+docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/connections.log
+
+# View all logs
+docker exec zerotier-sidecar ls -lh /var/log/zerotier-sidecar/
+```
+
+**Copy logs to host**:
+```bash
+# Copy current logs
+docker cp zerotier-sidecar:/var/log/zerotier-sidecar ./sidecar-logs
+
+# Copy and analyze
+docker exec zerotier-sidecar cat /var/log/zerotier-sidecar/monitor.log | grep "Service DOWN"
+```
+
+#### Monitoring Features
+
+The service monitor (started automatically) provides:
+
+- **Service Health Checks**: Verifies each forwarded service every 30 seconds
+- **Automatic Recovery**: Restores missing iptables/socat rules automatically
+- **Connection Tracking**: Logs new TCP connections (rate-limited: 3/min per port)
+- **State Tracking**: Detects service state changes (up ↔ down)
+- **Restoration Counter**: Tracks total number of rule restorations
+
+#### Log Rotation
+
+Logs are automatically rotated when they exceed 10MB:
+- Keeps up to 5 historical files (`.1`, `.2`, `.3`, `.4`, `.5`)
+- Oldest files are automatically deleted
+- Rotation happens during monitoring checks (every 30 seconds)
+
 ### Check Container Status
 ```bash
-# View logs with mode information
+# View container logs with mode information
 docker logs zerotier-sidecar
+
+# View service monitor logs
+docker exec zerotier-sidecar tail -100 /var/log/zerotier-sidecar/monitor.log
+
+# View connection logs
+docker exec zerotier-sidecar tail -100 /var/log/zerotier-sidecar/connections.log
 
 # Check configuration
 docker exec zerotier-sidecar cat /tmp/zt-sidecar/config.json
