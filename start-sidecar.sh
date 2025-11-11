@@ -643,17 +643,6 @@ if [ -n "$PORT_FORWARD" ]; then
             if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
                 echo "Setting up: $EXT_PORT -> $DEST_IP:$DEST_PORT"
 
-                # КРИТИЧЕСКИ ВАЖНО: Добавляем LOG правило ПЕРВЫМ, ДО всех ACCEPT правил!
-                # LOG с -I вставляет в позицию 1, потом ACCEPT тоже с -I вставляются в позицию 1
-                # В итоге LOG окажется ПОСЛЕ ACCEPT. Поэтому добавляем LOG самым последним,
-                # чтобы он оказался самым первым в цепочке
-                # НО! Это тоже не работает... Нужен другой подход
-
-                # ПРАВИЛЬНОЕ РЕШЕНИЕ: Добавлять LOG в самом начале, ДО всех операций
-                # Тогда все последующие -I будут сдвигать LOG вниз, но для первого порта
-                # LOG будет на позиции 1
-                add_connection_logging "$EXT_PORT" "$DEST_IP" "$DEST_PORT"
-
                 # Открываем порты в зависимости от режима
                 case $GATEWAY_MODE in
                     "false")
@@ -823,6 +812,40 @@ else
     done
     echo "💡 Note: Use GATEWAY_MODE=hybrid for ZeroTier destinations"
 fi
+
+# КРИТИЧЕСКИ ВАЖНО: Добавляем LOG правила В САМОМ КОНЦЕ, после всех ACCEPT правил!
+# Используем -I (insert at position 1), чтобы LOG правила оказались В НАЧАЛЕ цепочки
+# Добавляем в ОБРАТНОМ порядке, чтобы первый порт оказался первым в цепочке
+echo ""
+echo "Adding connection logging rules..."
+if [ -n "$RESOLVED_FORWARDS" ]; then
+    # Создаём массив портов
+    IFS=',' read -ra FORWARDS <<< "$RESOLVED_FORWARDS"
+    PORTS_ARRAY=()
+
+    for forward in "${FORWARDS[@]}"; do
+        IFS=':' read -ra PARTS <<< "$forward"
+        EXT_PORT=${PARTS[0]}
+        DEST_IP=${PARTS[1]}
+        DEST_PORT=${PARTS[2]}
+        if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
+            PORTS_ARRAY+=("$EXT_PORT:$DEST_IP:$DEST_PORT")
+        fi
+    done
+
+    # Добавляем LOG правила в ОБРАТНОМ порядке (от последнего к первому)
+    # чтобы при вставке с -I они оказались в правильном порядке
+    for ((i=${#PORTS_ARRAY[@]}-1; i>=0; i--)); do
+        IFS=':' read -ra PARTS <<< "${PORTS_ARRAY[$i]}"
+        EXT_PORT=${PARTS[0]}
+        DEST_IP=${PARTS[1]}
+        DEST_PORT=${PARTS[2]}
+        add_connection_logging "$EXT_PORT" "$DEST_IP" "$DEST_PORT"
+        echo "✓ Added logging for port $EXT_PORT"
+    done
+    echo "✓ Connection logging rules added ($(echo ${#PORTS_ARRAY[@]}) ports)"
+fi
+
 echo "============================"
 
 # === SERVICE MONITORING AND AUTO-RECOVERY ===
