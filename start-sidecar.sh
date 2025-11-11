@@ -509,9 +509,11 @@ if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
     fi
 
     # Добавляем правила для всех ZeroTier интерфейсов
+    # ВАЖНО: Используем -A (append) вместо -I (insert), чтобы базовое правило
+    # было в КОНЦЕ цепочки, после специфичных LOG правил для портов
     for zt_iface in "${ZT_INTERFACES[@]}"; do
         echo "Adding rules for interface: $zt_iface"
-        iptables -I ZEROTIER_INPUT -i "$zt_iface" -j ACCEPT
+        iptables -A ZEROTIER_INPUT -i "$zt_iface" -j ACCEPT
 
         # Разрешаем форвардинг между всеми ZeroTier интерфейсами
         for zt_iface2 in "${ZT_INTERFACES[@]}"; do
