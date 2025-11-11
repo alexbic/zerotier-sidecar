@@ -509,6 +509,7 @@ jobs:
           echo " - ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
           docker buildx build \
             --platform linux/amd64 \
+            --no-cache \
             -t alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }} \
             -t alexbic/zerotier-sidecar:${{ steps.version.outputs.version }} \
             -t ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.base_tag }} \
