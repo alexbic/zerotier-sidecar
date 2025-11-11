@@ -19,6 +19,7 @@ RUN apt-get update && \
             dnsutils \
         procps \
         telnet \
+        netcat-openbsd \
         net-tools \
         socat && \
     rm -rf /var/lib/apt/lists/*

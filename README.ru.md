@@ -128,6 +128,7 @@ services:
     volumes:
       - ./sidecar-data:/var/lib/zerotier-one      # ZeroTier идентификация
       - ./sidecar-logs:/var/log/zerotier-sidecar  # Логи мониторинга (НОВОЕ!)
+      - /var/log/kern.log:/var/log/kern.log:ro     # Kernel log (отслеживание подключений)
     networks:
       - default
     env_file:
