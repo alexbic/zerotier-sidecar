@@ -2,9 +2,12 @@
 #
 # NEW in v2.1.4: Comprehensive Logging System
 # - Service monitoring logs: /var/log/zerotier-sidecar/monitor.log
-# - Connection tracking logs: /var/log/zerotier-sidecar/connections.log
+# - Connection tracking logs: /var/log/zerotier-sidecar/connections.log (summary statistics)
 # - Automatic log rotation (10MB limit, 5 historical files)
 # - Container names displayed in logs instead of IP addresses
+#
+# Note: Connection logging tracks NEW connections via iptables packet counters
+#       (not individual connection details due to Docker kernel log limitations)
 #
 # Logs are accessible via:
 #   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
@@ -26,7 +29,6 @@ services:
     volumes:
       - /opt/zerotier-sidecar:/var/lib/zerotier-one           # ZeroTier identity and configuration
       - /opt/zerotier-sidecar-logs:/var/log/zerotier-sidecar  # Monitoring logs (NEW in v2.1.4!)
-      - /var/log/kern.log:/var/log/kern.log:ro                 # Kernel log for connection tracking (read-only)
     networks:
       - default
     env_file:

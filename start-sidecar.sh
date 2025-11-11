@@ -1104,44 +1104,47 @@ monitor_services() {
     done
 }
 
-# Фоновый процесс для парсинга iptables логов
+# Фоновый процесс для парсинга iptables логов через счетчики пакетов
+# ВАЖНО: Docker контейнер не может читать kernel log в realtime даже с privileged mode
+# Вместо этого мы отслеживаем изменения в счетчиках пакетов iptables LOG правил
 monitor_connections() {
-    local last_position=0
+    # Ассоциативный массив для хранения предыдущих значений счетчиков
+    declare -A PACKET_COUNTERS
 
-    # Определяем файл kernel log в зависимости от системы
-    local kern_log=""
-    if [ -f "/var/log/kern.log" ]; then
-        kern_log="/var/log/kern.log"
-    elif [ -f "/var/log/messages" ]; then
-        kern_log="/var/log/messages"
-    else
-        log_message "WARN" "Kernel log file not found, connection logging disabled"
-        return
-    fi
-
-    log_message "INFO" "Connection monitor started, watching $kern_log"
+    log_message "INFO" "Connection monitor started (iptables packet counter mode)"
+    log_message "INFO" "Note: Individual connections not logged, only summary statistics"
 
     while true; do
-        # Читаем новые строки из kernel log
-        if [ -f "$kern_log" ]; then
-            # Ищем строки с нашим префиксом ZT-CONN
-            tail -n 100 "$kern_log" 2>/dev/null | grep "ZT-CONN" | while read -r line; do
-                # Парсим строку и записываем в connection log
-                if [[ "$line" =~ ZT-CONN-([0-9]+):.*SRC=([0-9.]+).*DST=([0-9.]+).*DPT=([0-9]+) ]]; then
-                    local port="${BASH_REMATCH[1]}"
-                    local src="${BASH_REMATCH[2]}"
-                    local dst="${BASH_REMATCH[3]}"
-                    local dpt="${BASH_REMATCH[4]}"
-                    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-                    echo "[$timestamp] NEW CONNECTION: $src -> $dst:$dpt (port $port)" >> "$CONNECTION_LOG"
+        sleep 30  # Проверяем каждые 30 секунд
+
+        # Получаем текущие счетчики для всех LOG правил
+        iptables -L ZEROTIER_INPUT -n -v --line-numbers | grep "LOG" | grep "ZT-CONN" | while read -r line; do
+            # Парсим: num pkts bytes target prot ... dpt:PORT ... prefix "ZT-CONN-PORT: "
+            if [[ "$line" =~ ^([0-9]+)[[:space:]]+([0-9]+)[[:space:]]+([0-9]+).*dpt:([0-9]+).*\"ZT-CONN-([0-9]+): ]]; then
+                local rule_num="${BASH_REMATCH[1]}"
+                local packets="${BASH_REMATCH[2]}"
+                local bytes="${BASH_REMATCH[3]}"
+                local port="${BASH_REMATCH[5]}"
+                local key="port_$port"
+
+                # Если счетчик изменился - логируем
+                if [ -n "${PACKET_COUNTERS[$key]}" ]; then
+                    local prev_count=${PACKET_COUNTERS[$key]}
+                    if [ "$packets" -gt "$prev_count" ]; then
+                        local new_connections=$((packets - prev_count))
+                        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+                        echo "[$timestamp] Port $port: +$new_connections new connection(s) (total: $packets)" >> "$CONNECTION_LOG"
+                        log_message "INFO" "Port $port: +$new_connections new connection(s) detected"
+                    fi
                 fi
-            done
-        fi
+
+                # Сохраняем текущий счетчик
+                PACKET_COUNTERS[$key]="$packets"
+            fi
+        done
 
         # Ротация connection log
         rotate_logs "$CONNECTION_LOG"
-
-        sleep 10
     done
 }
 
