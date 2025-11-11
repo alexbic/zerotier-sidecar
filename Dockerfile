@@ -10,18 +10,21 @@ LABEL org.opencontainers.image.title="ZeroTier Sidecar" \
       org.opencontainers.image.source="https://github.com/alexbic/zerotier-sidecar" \
       org.opencontainers.image.documentation="https://github.com/alexbic/zerotier-sidecar#readme"
 
+# Базовые сетевые утилиты (минимальный набор)
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         curl \
         iproute2 \
         iptables \
         iputils-ping \
-        dnsutils \
         procps \
-        telnet \
         netcat-openbsd \
-        net-tools \
-        socat \
+        socat && \
+    rm -rf /var/lib/apt/lists/*
+
+# Логирование подключений (отдельный слой для кеширования)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
         ulogd2 \
         iptables-persistent && \
     rm -rf /var/lib/apt/lists/*
