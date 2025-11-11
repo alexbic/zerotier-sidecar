@@ -262,7 +262,8 @@ add_connection_logging() {
 
     # Логируем только NEW подключения (не весь трафик)
     # Ограничиваем частоту: 3 сообщения в минуту для каждого порта
-    iptables -I ZEROTIER_INPUT -p tcp --dport "$port" -m conntrack --ctstate NEW \
+    # ВАЖНО: Вставляем в позицию 1, чтобы правило было ПЕРЕД общим ACCEPT для интерфейса
+    iptables -I ZEROTIER_INPUT 1 -p tcp --dport "$port" -m conntrack --ctstate NEW \
         -m limit --limit 3/min --limit-burst 5 \
         -j LOG --log-prefix "$log_prefix: " --log-level 6 2>/dev/null || true
 }
