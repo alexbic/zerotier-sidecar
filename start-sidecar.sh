@@ -641,6 +641,10 @@ if [ -n "$PORT_FORWARD" ]; then
             if [ -n "$EXT_PORT" ] && [ -n "$DEST_IP" ] && [ -n "$DEST_PORT" ]; then
                 echo "Setting up: $EXT_PORT -> $DEST_IP:$DEST_PORT"
 
+                # Добавляем логирование подключений для этого порта ПЕРЕД ACCEPT правилами
+                # чтобы LOG правило было выше в цепочке
+                add_connection_logging "$EXT_PORT" "$DEST_IP" "$DEST_PORT"
+
                 # Открываем порты в зависимости от режима
                 case $GATEWAY_MODE in
                     "false")
@@ -681,9 +685,6 @@ if [ -n "$PORT_FORWARD" ]; then
                         exit 1
                         ;;
                 esac
-
-                # Добавляем логирование подключений для этого порта
-                add_connection_logging "$EXT_PORT" "$DEST_IP" "$DEST_PORT"
 
                 # Выбираем способ перенаправления
                 if is_zerotier_address "$DEST_IP"; then
