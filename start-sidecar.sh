@@ -253,21 +253,19 @@ add_docker_network_rules() {
     done
 }
 
-# Функция добавления правил логирования подключений
+# Функция добавления правил логирования подключений через NFLOG
 add_connection_logging() {
     local port="$1"
     local dest_ip="$2"
     local dest_port="$3"
-    local log_prefix="ZT-CONN-${port}"
 
+    # Используем NFLOG вместо LOG для отправки в userspace (ulogd2)
+    # NFLOG group 1 соответствует настройке в ulogd.conf
     # Логируем только NEW подключения (не весь трафик)
     # Ограничиваем частоту: 3 сообщения в минуту для каждого порта
-    # ВАЖНО: LOG не останавливает обработку - пакет продолжает идти по цепочке
-    # Поэтому неважно где LOG, главное чтобы пакет до него дошёл
-    # Вставляем в позицию 1 чтобы LOG был самым первым правилом для этого порта
     iptables -I ZEROTIER_INPUT 1 -p tcp --dport "$port" -m conntrack --ctstate NEW \
         -m limit --limit 3/min --limit-burst 5 \
-        -j LOG --log-prefix "$log_prefix: " --log-level 6 2>/dev/null || true
+        -j NFLOG --nflog-group 1 --nflog-prefix "PORT-${port}" 2>/dev/null || true
 }
 
 # Функция проверки попадания IP в сеть
@@ -1104,53 +1102,37 @@ monitor_services() {
     done
 }
 
-# Фоновый процесс для парсинга iptables логов через счетчики пакетов
-# ВАЖНО: Docker контейнер не может читать kernel log в realtime даже с privileged mode
-# Вместо этого мы отслеживаем изменения в счетчиках пакетов iptables LOG правил
-monitor_connections() {
-    # Ассоциативный массив для хранения предыдущих значений счетчиков
-    declare -A PACKET_COUNTERS
+# Запуск ulogd2 для логирования подключений через NFLOG
+# ulogd2 получает пакеты из iptables NFLOG и записывает в connections.log
+start_ulogd() {
+    log_message "INFO" "Starting ulogd2 for connection logging (NFLOG mode)"
 
-    log_message "INFO" "Connection monitor started (iptables packet counter mode)"
-    log_message "INFO" "Note: Individual connections not logged, only summary statistics"
+    # Создаём директорию для логов если её нет
+    mkdir -p "$LOG_DIR"
 
-    while true; do
-        sleep 30  # Проверяем каждые 30 секунд
+    # Запускаем ulogd2 в foreground mode (будет работать в фоне через &)
+    # -v включает verbose режим для отладки
+    /usr/sbin/ulogd2 -c /etc/ulogd.conf &
+    ULOGD_PID=$!
 
-        # Получаем текущие счетчики для всех LOG правил
-        iptables -L ZEROTIER_INPUT -n -v --line-numbers | grep "LOG" | grep "ZT-CONN" | while read -r line; do
-            # Парсим: num pkts bytes target prot ... dpt:PORT ... prefix "ZT-CONN-PORT: "
-            if [[ "$line" =~ ^([0-9]+)[[:space:]]+([0-9]+)[[:space:]]+([0-9]+).*dpt:([0-9]+).*\"ZT-CONN-([0-9]+): ]]; then
-                local rule_num="${BASH_REMATCH[1]}"
-                local packets="${BASH_REMATCH[2]}"
-                local bytes="${BASH_REMATCH[3]}"
-                local port="${BASH_REMATCH[5]}"
-                local key="port_$port"
+    # Даём ulogd2 время запуститься
+    sleep 2
 
-                # Если счетчик изменился - логируем
-                if [ -n "${PACKET_COUNTERS[$key]}" ]; then
-                    local prev_count=${PACKET_COUNTERS[$key]}
-                    if [ "$packets" -gt "$prev_count" ]; then
-                        local new_connections=$((packets - prev_count))
-                        local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-                        echo "[$timestamp] Port $port: +$new_connections new connection(s) (total: $packets)" >> "$CONNECTION_LOG"
-                        log_message "INFO" "Port $port: +$new_connections new connection(s) detected"
-                    fi
-                fi
-
-                # Сохраняем текущий счетчик
-                PACKET_COUNTERS[$key]="$packets"
-            fi
-        done
-
-        # Ротация connection log
-        rotate_logs "$CONNECTION_LOG"
-    done
+    # Проверяем что ulogd2 запустился
+    if ps -p $ULOGD_PID > /dev/null 2>&1; then
+        log_message "INFO" "ulogd2 started successfully (PID: $ULOGD_PID)"
+        echo "✓ Connection logger started (PID: $ULOGD_PID)"
+        echo "  - Mode: NFLOG + ulogd2"
+        echo "  - Log file: $CONNECTION_LOG"
+        echo "  - Format: Full connection details (SRC, DST, PORT)"
+    else
+        log_message "ERROR" "Failed to start ulogd2"
+        echo "⚠️  Connection logger failed to start"
+    fi
 }
 
-# Запускаем мониторинг подключений в фоне
-monitor_connections &
-CONN_MONITOR_PID=$!
+# Запускаем ulogd2 для логирования подключений
+start_ulogd
 
 # Запускаем мониторинг сервисов в фоне
 if [ -n "$RESOLVED_FORWARDS" ]; then
@@ -1161,10 +1143,7 @@ if [ -n "$RESOLVED_FORWARDS" ]; then
     echo "  - Check interval: 30 seconds"
     echo "  - Auto-recovery: enabled"
     echo "  - Log file: $LOG_FILE"
-    echo "  - Connection log: $CONNECTION_LOG"
-    echo "✓ Connection monitor started (PID: $CONN_MONITOR_PID)"
     log_message "INFO" "Service monitor started (PID: $MONITOR_PID)"
-    log_message "INFO" "Connection monitor started (PID: $CONN_MONITOR_PID)"
 else
     echo "ℹ️  Service monitor not started (no port forwards configured)"
 fi

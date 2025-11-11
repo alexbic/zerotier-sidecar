@@ -16,12 +16,14 @@ RUN apt-get update && \
         iproute2 \
         iptables \
         iputils-ping \
-            dnsutils \
+        dnsutils \
         procps \
         telnet \
         netcat-openbsd \
         net-tools \
-        socat && \
+        socat \
+        ulogd2 \
+        iptables-persistent && \
     rm -rf /var/lib/apt/lists/*
 
 # Установка ZeroTier
@@ -31,7 +33,9 @@ RUN curl -s https://install.zerotier.com | bash && \
     # Удаление identity файлов чтобы каждый контейнер генерировал уникальный identity
     rm -rf /var/lib/zerotier-one/identity.* /var/lib/zerotier-one/*.secret /var/lib/zerotier-one/*.pid
 
+# Копируем скрипт запуска и конфигурацию ulogd
 COPY start-sidecar.sh /usr/local/bin/start-sidecar.sh
+COPY ulogd.conf /etc/ulogd.conf
 RUN chmod +x /usr/local/bin/start-sidecar.sh
 
 ENTRYPOINT ["/usr/local/bin/start-sidecar.sh"]

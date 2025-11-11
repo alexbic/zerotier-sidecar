@@ -2,12 +2,14 @@
 #
 # NEW in v2.1.4: Comprehensive Logging System
 # - Service monitoring logs: /var/log/zerotier-sidecar/monitor.log
-# - Connection tracking logs: /var/log/zerotier-sidecar/connections.log (summary statistics)
+# - Connection tracking logs: /var/log/zerotier-sidecar/connections.log (full details)
 # - Automatic log rotation (10MB limit, 5 historical files)
 # - Container names displayed in logs instead of IP addresses
 #
-# Note: Connection logging tracks NEW connections via iptables packet counters
-#       (not individual connection details due to Docker kernel log limitations)
+# Connection Logging via NFLOG + ulogd2:
+# - Logs include: source IP, destination IP, ports, protocol
+# - NEW connections tracked in real-time
+# - Rate-limited to prevent log flooding (3/min per port)
 #
 # Logs are accessible via:
 #   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
