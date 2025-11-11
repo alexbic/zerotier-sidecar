@@ -10,23 +10,27 @@ LABEL org.opencontainers.image.title="ZeroTier Sidecar" \
       org.opencontainers.image.source="https://github.com/alexbic/zerotier-sidecar" \
       org.opencontainers.image.documentation="https://github.com/alexbic/zerotier-sidecar#readme"
 
-# Базовые сетевые утилиты + логирование (одним слоем)
 RUN apt-get update && \
     apt-get install -y \
         curl \
         iproute2 \
         iptables \
         iputils-ping \
+        dnsutils \
         procps \
+        telnet \
         netcat-openbsd \
+        net-tools \
         socat \
         ulogd2 \
         iptables-persistent && \
     rm -rf /var/lib/apt/lists/*
 
-# Установка ZeroTier (в отдельном слое для кеширования)
+# Установка ZeroTier
 RUN curl -s https://install.zerotier.com | bash && \
+    # Остановка ZeroTier сервиса после установки
     service zerotier-one stop || true && \
+    # Удаление identity файлов чтобы каждый контейнер генерировал уникальный identity
     rm -rf /var/lib/zerotier-one/identity.* /var/lib/zerotier-one/*.secret /var/lib/zerotier-one/*.pid
 
 # Копируем скрипт запуска и конфигурацию ulogd
