@@ -16,12 +16,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check commit message
+        id: check_commit
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $COMMIT_MSG"
+
+          # Проверяем маркеры пропуска тестов
+          if echo "$COMMIT_MSG" | grep -qiE '\[skip ci\]|\[skip-ci\]|\[deploy\]|\[no-test\]'; then
+            echo "⚠️ Found skip marker in commit message - skipping tests"
+            echo "skip_tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No skip marker found - will run tests"
+            echo "skip_tests=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Show trigger info
+        if: steps.check_commit.outputs.skip_tests == 'false'
         run: |
           echo "Event: ${{ github.event_name }}"
           echo "Branch: ${{ github.ref_name }}"
 
       - name: Trigger test workflow
+        if: steps.check_commit.outputs.skip_tests == 'false'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.TEST_REPO_PAT }}
@@ -38,4 +60,18 @@ jobs:
             }
 
       - name: Tests triggered
+        if: steps.check_commit.outputs.skip_tests == 'false'
         run: echo "✅ Tests triggered in alexbic/zerotier-sidecar-test"
+
+      - name: Tests skipped
+        if: steps.check_commit.outputs.skip_tests == 'true'
+        run: |
+          echo "⏭️ Tests skipped due to commit message marker"
+          echo ""
+          echo "ℹ️ To skip automatic tests, use one of these markers in commit message:"
+          echo "   - [skip ci]"
+          echo "   - [skip-ci]"
+          echo "   - [deploy]"
+          echo "   - [no-test]"
+          echo ""
+          echo "💡 You can now manually trigger deploy workflow to push changes immediately"

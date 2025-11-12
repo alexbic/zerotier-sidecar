@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      no_cache:
+        description: 'Build without Docker cache (force full rebuild)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -500,6 +505,15 @@ jobs:
       - name: 🔧 Build & Push Docker
         if: steps.docker_check.outputs.should_build == 'true'
         run: |
+          # Определяем флаг кэша
+          CACHE_FLAG=""
+          if [ "${{ github.event.inputs.no_cache }}" = "true" ]; then
+            CACHE_FLAG="--no-cache"
+            echo "⚠️ Building WITHOUT cache (forced full rebuild)"
+          else
+            echo "✅ Building WITH cache (normal mode)"
+          fi
+
           echo "Building Docker image:"
           echo "Docker Hub:"
           echo " - alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }}"
@@ -509,6 +523,7 @@ jobs:
           echo " - ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}"
           docker buildx build \
             --platform linux/amd64 \
+            $CACHE_FLAG \
             -t alexbic/zerotier-sidecar:${{ steps.vars.outputs.base_tag }} \
             -t alexbic/zerotier-sidecar:${{ steps.version.outputs.version }} \
             -t ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.base_tag }} \
