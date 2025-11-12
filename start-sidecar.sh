@@ -508,12 +508,11 @@ if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
         iptables -I FORWARD -j ZEROTIER_FORWARD
     fi
 
-    # Добавляем правила для всех ZeroTier интерфейсов
-    # ВАЖНО: Используем -A (append) вместо -I (insert), чтобы базовое правило
-    # было в КОНЦЕ цепочки, после специфичных LOG правил для портов
+    # Добавляем правила форвардинга между ZeroTier интерфейсами
+    # НЕ добавляем общее ACCEPT для ZeroTier интерфейсов здесь!
+    # Оно будет добавлено в самом конце, ПОСЛЕ NFLOG правил логирования
     for zt_iface in "${ZT_INTERFACES[@]}"; do
-        echo "Adding rules for interface: $zt_iface"
-        iptables -A ZEROTIER_INPUT -i "$zt_iface" -j ACCEPT
+        echo "Adding forwarding rules for interface: $zt_iface"
 
         # Разрешаем форвардинг между всеми ZeroTier интерфейсами
         for zt_iface2 in "${ZT_INTERFACES[@]}"; do
@@ -521,7 +520,7 @@ if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
         done
     done
 
-    echo "✓ ZeroTier internal traffic allowed on ${#ZT_INTERFACES[@]} interface(s)"
+    echo "✓ ZeroTier forwarding rules added for ${#ZT_INTERFACES[@]} interface(s)"
 fi
 
 # Диагностика DNS после настройки firewall
@@ -842,6 +841,19 @@ if [ -n "$RESOLVED_FORWARDS" ]; then
         echo "✓ Added logging for port $EXT_PORT"
     done
     echo "✓ Connection logging rules added ($(echo ${#PORTS_ARRAY[@]}) ports)"
+fi
+
+# Теперь добавляем общее ACCEPT правило для ZeroTier интерфейсов
+# ВАЖНО: Это должно быть В САМОМ КОНЦЕ, после всех NFLOG правил!
+# Используем -A (append), чтобы правило оказалось в конце цепочки
+if [ "$GATEWAY_MODE" = "hybrid" ] || [ "$GATEWAY_MODE" = "true" ]; then
+    echo ""
+    echo "Adding final ZeroTier ACCEPT rules..."
+    for zt_iface in "${ZT_INTERFACES[@]}"; do
+        iptables -A ZEROTIER_INPUT -i "$zt_iface" -j ACCEPT
+        echo "✓ Added ACCEPT rule for interface: $zt_iface"
+    done
+    echo "✓ ZeroTier interface ACCEPT rules added (after logging rules)"
 fi
 
 echo "============================"
