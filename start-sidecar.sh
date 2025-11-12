@@ -7,6 +7,7 @@ PORT_FORWARD=${PORT_FORWARD:-""}
 GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
 FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
+DEBUG_IPTABLES=${DEBUG_IPTABLES:-"false"}  # Enable comprehensive iptables logging for debugging
 
 # Simple resolver: use getent (NSS: /etc/hosts + Docker DNS + DNS) then ping as fallback.
 resolve_name_to_ip() {
@@ -263,9 +264,77 @@ add_connection_logging() {
     # NFLOG group 1 соответствует настройке в ulogd.conf
     # Логируем только NEW подключения (не весь трафик)
     # Ограничиваем частоту: 3 сообщения в минуту для каждого порта
+
+    # Добавляем в ZEROTIER_INPUT (для входящих подключений напрямую к контейнеру)
     iptables -I ZEROTIER_INPUT 1 -p tcp --dport "$port" -m conntrack --ctstate NEW \
         -m limit --limit 3/min --limit-burst 5 \
         -j NFLOG --nflog-group 1 --nflog-prefix "PORT-${port}" 2>/dev/null || true
+
+    # Добавляем в ZEROTIER_FORWARD (для пересылаемых подключений с DNAT)
+    # Это нужно для портов, которые перенаправляются на Docker контейнеры
+    iptables -I ZEROTIER_FORWARD 1 -p tcp --dport "$port" -m conntrack --ctstate NEW \
+        -m limit --limit 3/min --limit-burst 5 \
+        -j NFLOG --nflog-group 1 --nflog-prefix "PORT-${port}" 2>/dev/null || true
+}
+
+# Функция для полного отладочного логирования ВСЕХ iptables цепочек
+# Используется для диагностики сетевых проблем
+# Включается через переменную DEBUG_IPTABLES=true
+add_debug_logging() {
+    echo ""
+    echo "🔍 DEBUG MODE: Adding comprehensive iptables logging..."
+    echo "⚠️  WARNING: This will generate A LOT of log entries!"
+    echo ""
+
+    # FILTER table - основные цепочки пакетной фильтрации
+    echo "Adding logging to FILTER table..."
+
+    # INPUT chain - входящие пакеты для локальных процессов
+    iptables -I INPUT 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-INPUT] " --log-level 4 2>/dev/null || true
+
+    # OUTPUT chain - исходящие пакеты от локальных процессов
+    iptables -I OUTPUT 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-OUTPUT] " --log-level 4 2>/dev/null || true
+
+    # FORWARD chain - транзитные пакеты (роутинг/DNAT)
+    iptables -I FORWARD 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-FORWARD] " --log-level 4 2>/dev/null || true
+
+    # Наши пользовательские цепочки
+    iptables -I ZEROTIER_INPUT 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-ZT-IN] " --log-level 4 2>/dev/null || true
+
+    iptables -I ZEROTIER_FORWARD 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-ZT-FWD] " --log-level 4 2>/dev/null || true
+
+    # NAT table - трансляция адресов
+    echo "Adding logging to NAT table..."
+
+    # PREROUTING - изменение destination перед роутингом (DNAT)
+    iptables -t nat -I PREROUTING 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-NAT-PRE] " --log-level 4 2>/dev/null || true
+
+    # POSTROUTING - изменение source после роутинга (SNAT/MASQUERADE)
+    iptables -t nat -I POSTROUTING 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-NAT-POST] " --log-level 4 2>/dev/null || true
+
+    # OUTPUT - изменение destination для локально-генерируемых пакетов
+    iptables -t nat -I OUTPUT 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-NAT-OUT] " --log-level 4 2>/dev/null || true
+
+    # MANGLE table - модификация пакетов (TTL, TOS и т.д.)
+    echo "Adding logging to MANGLE table..."
+
+    iptables -t mangle -I PREROUTING 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-MGL-PRE] " --log-level 4 2>/dev/null || true
+
+    iptables -t mangle -I POSTROUTING 1 -m limit --limit 10/min --limit-burst 20 \
+        -j LOG --log-prefix "[DBG-MGL-POST] " --log-level 4 2>/dev/null || true
+
+    echo "✅ Debug logging enabled for all iptables chains"
+    echo "📝 Check logs with: docker exec <container> dmesg | grep 'DBG-'"
+    echo ""
 }
 
 # Функция проверки попадания IP в сеть
@@ -841,6 +910,11 @@ if [ -n "$RESOLVED_FORWARDS" ]; then
         echo "✓ Added logging for port $EXT_PORT"
     done
     echo "✓ Connection logging rules added ($(echo ${#PORTS_ARRAY[@]}) ports)"
+fi
+
+# Добавляем полное отладочное логирование если DEBUG_IPTABLES=true
+if [ "$DEBUG_IPTABLES" = "true" ]; then
+    add_debug_logging
 fi
 
 # Теперь добавляем общее ACCEPT правило для ZeroTier интерфейсов

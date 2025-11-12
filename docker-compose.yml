@@ -1,6 +1,6 @@
 # ZeroTier Sidecar - Docker Compose Configuration
 #
-# NEW in v2.1.4: Comprehensive Logging System
+# Comprehensive Logging System (v2.1.4+):
 # - Service monitoring logs: /var/log/zerotier-sidecar/monitor.log
 # - Connection tracking logs: /var/log/zerotier-sidecar/connections.log (full details)
 # - Automatic log rotation (10MB limit, 5 historical files)
@@ -10,6 +10,14 @@
 # - Logs include: source IP, destination IP, ports, protocol
 # - NEW connections tracked in real-time
 # - Rate-limited to prevent log flooding (3/min per port)
+# - Logs both INPUT (direct) and FORWARD (DNAT) traffic
+#
+# Debug Mode (NEW in v2.1.5+):
+# - Set DEBUG_IPTABLES=true to enable comprehensive iptables logging
+# - Logs ALL network activity: INPUT, OUTPUT, FORWARD, NAT, MANGLE
+# - Useful for debugging network issues
+# - WARNING: Generates A LOT of log entries!
+# - Check logs with: docker exec zerotier-sidecar dmesg | grep 'DBG-'
 #
 # Logs are accessible via:
 #   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
@@ -39,6 +47,7 @@ services:
       # Default settings (can be overridden in .env file)
       - GATEWAY_MODE=${GATEWAY_MODE:-false}
       - ALLOWED_SOURCES=${ALLOWED_SOURCES:-any}
+      - DEBUG_IPTABLES=${DEBUG_IPTABLES:-false}  # Enable comprehensive iptables logging
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
