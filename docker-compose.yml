@@ -20,11 +20,13 @@
 # - Check logs with: docker exec zerotier-sidecar dmesg | grep 'DBG-'
 #
 # Connection Logs Console Output (NEW in v2.1.6+):
-# - Set LOG_CONNECTIONS=true to output connection logs to Docker console
-# - Shows new connections in real-time: docker logs -f zerotier-sidecar
-# - Includes full connection details (SRC IP, DST IP, PORT, protocol)
-# - Logs are still written to /var/log/zerotier-sidecar/connections.log
-# - Useful for monitoring and debugging without exec into container
+# - Set LOG_CONNECTIONS=simple for clean format: [timestamp] SRC_IP → DST_IP (service_name):PORT
+# - Set LOG_CONNECTIONS=full for complete NFLOG details (MAC, TTL, SEQ, etc.)
+# - Set LOG_CONNECTIONS=false to disable console output (default)
+# - Monitor: docker logs -f zerotier-sidecar
+# - Simple mode shows service names automatically (e.g., "172.22.0.3 (rsync-server)")
+# - File logs (/var/log/zerotier-sidecar/connections.log) always contain full details
+# - Simple mode recommended for production, full mode for debugging
 #
 # Logs are accessible via:
 #   docker exec zerotier-sidecar tail -f /var/log/zerotier-sidecar/monitor.log
@@ -55,7 +57,7 @@ services:
       - GATEWAY_MODE=${GATEWAY_MODE:-false}
       - ALLOWED_SOURCES=${ALLOWED_SOURCES:-any}
       - DEBUG_IPTABLES=${DEBUG_IPTABLES:-false}  # Enable comprehensive iptables logging
-      - LOG_CONNECTIONS=${LOG_CONNECTIONS:-false}  # Output connection logs to console
+      - LOG_CONNECTIONS=${LOG_CONNECTIONS:-false}  # Console output: false/simple/full
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN

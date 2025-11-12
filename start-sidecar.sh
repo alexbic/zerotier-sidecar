@@ -798,11 +798,18 @@ fi
 
 # Сохраняем конфигурацию для отладки
 mkdir -p /tmp/zt-sidecar
+
+# Сохраняем маппинг IP -> имя для использования в логировании
+> /tmp/zt-sidecar/ip_names.map
+for ip in "${!IP_TO_NAME_MAP[@]}"; do
+    echo "${ip}=${IP_TO_NAME_MAP[$ip]}" >> /tmp/zt-sidecar/ip_names.map
+done
+
 cat > /tmp/zt-sidecar/config.json << EOF
 {
   "mode": "$GATEWAY_MODE",
   "zerotier_ip": "$ZT_IP",
-  "zerotier_interface": "$ZT_IF", 
+  "zerotier_interface": "$ZT_IF",
   "network": "$ZT_NETWORK",
   "port_forwarding": "$PORT_FORWARD",
   "allowed_sources": "$ALLOWED_SOURCES",
@@ -1220,6 +1227,8 @@ start_ulogd() {
 
 # Функция вывода логов подключений в консоль
 tail_connection_logs() {
+    local mode="$1"
+
     # Ждём пока файл логов появится
     local max_wait=10
     local waited=0
@@ -1229,11 +1238,71 @@ tail_connection_logs() {
     done
 
     if [ -f "$CONNECTION_LOG" ]; then
-        echo "📡 Connection logging to console enabled"
-        # Используем tail -F (follow with retry) для отслеживания ротаций логов
-        tail -F "$CONNECTION_LOG" 2>/dev/null &
-        TAIL_PID=$!
-        echo "  - Tail process: PID $TAIL_PID"
+        if [ "$mode" = "simple" ]; then
+            echo "📡 Connection logging to console enabled (simplified format)"
+            echo "  - Format: [timestamp] SRC_IP → DST_IP (service_name):PORT"
+
+            # Загружаем маппинг IP -> имя в awk
+            local ip_map_file="/tmp/zt-sidecar/ip_names.map"
+
+            # Парсим NFLOG формат и выводим только важную информацию
+            tail -F "$CONNECTION_LOG" 2>/dev/null | awk -v mapfile="$ip_map_file" '
+                BEGIN {
+                    # Загружаем маппинг IP -> имя
+                    if ((getline < mapfile) >= 0) {
+                        close(mapfile)
+                        while ((getline line < mapfile) > 0) {
+                            split(line, parts, "=")
+                            if (length(parts) == 2) {
+                                ip_to_name[parts[1]] = parts[2]
+                            }
+                        }
+                        close(mapfile)
+                    }
+                }
+
+                /PORT-[0-9]+/ {
+                    # Извлекаем поля
+                    timestamp = $1 " " $2
+                    src = ""
+                    dst = ""
+                    dpt = ""
+
+                    for (i=1; i<=NF; i++) {
+                        if ($i ~ /^SRC=/) {
+                            src = substr($i, 5)
+                        }
+                        if ($i ~ /^DST=/) {
+                            dst = substr($i, 5)
+                        }
+                        if ($i ~ /^DPT=/) {
+                            dpt = substr($i, 5)
+                        }
+                    }
+
+                    if (src && dst && dpt) {
+                        # Проверяем есть ли имя для destination IP
+                        dst_display = dst
+                        if (dst in ip_to_name) {
+                            dst_display = dst " (" ip_to_name[dst] ")"
+                        }
+
+                        printf "[%s] %s → %s:%s\n", timestamp, src, dst_display, dpt
+                        fflush()
+                    }
+                }
+            ' &
+            TAIL_PID=$!
+            echo "  - Tail process: PID $TAIL_PID"
+        else
+            # Full mode - показываем весь raw NFLOG формат
+            echo "📡 Connection logging to console enabled (full format)"
+            echo "  - Format: Complete NFLOG details"
+            # Используем tail -F (follow with retry) для отслеживания ротаций логов
+            tail -F "$CONNECTION_LOG" 2>/dev/null &
+            TAIL_PID=$!
+            echo "  - Tail process: PID $TAIL_PID"
+        fi
     else
         echo "⚠️  Connection log file not found: $CONNECTION_LOG"
     fi
@@ -1257,13 +1326,21 @@ else
 fi
 
 # Запускаем вывод логов подключений в консоль если включено
-if [ "$LOG_CONNECTIONS" = "true" ]; then
-    log_message "INFO" "Enabling connection logs output to console..."
-    tail_connection_logs
+if [ "$LOG_CONNECTIONS" = "simple" ] || [ "$LOG_CONNECTIONS" = "full" ]; then
+    log_message "INFO" "Enabling connection logs output to console (mode: $LOG_CONNECTIONS)..."
+    tail_connection_logs "$LOG_CONNECTIONS"
     echo "  - To disable: set LOG_CONNECTIONS=false"
+    echo "  - To change format: set LOG_CONNECTIONS=simple or LOG_CONNECTIONS=full"
+elif [ "$LOG_CONNECTIONS" = "true" ]; then
+    # Backward compatibility: true = simple mode
+    log_message "INFO" "Enabling connection logs output to console (mode: simple - legacy)..."
+    tail_connection_logs "simple"
+    echo "  - To disable: set LOG_CONNECTIONS=false"
+    echo "  - To change format: set LOG_CONNECTIONS=simple or LOG_CONNECTIONS=full"
 else
     echo "ℹ️  Connection logs output to console disabled"
-    echo "  - To enable: set LOG_CONNECTIONS=true in .env"
+    echo "  - To enable simplified format: set LOG_CONNECTIONS=simple in .env"
+    echo "  - To enable full format: set LOG_CONNECTIONS=full in .env"
 fi
 
 echo "===================================="
