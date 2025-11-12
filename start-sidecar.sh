@@ -1110,9 +1110,9 @@ start_ulogd() {
     # Создаём директорию для логов если её нет
     mkdir -p "$LOG_DIR"
 
-    # Запускаем ulogd2 в foreground mode (будет работать в фоне через &)
-    # -v включает verbose режим для отладки
-    /usr/sbin/ulogd2 -c /etc/ulogd.conf &
+    # Запускаем ulogd в foreground mode (будет работать в фоне через &)
+    # Пакет ulogd2 устанавливает бинарник как /usr/sbin/ulogd (без цифры 2)
+    /usr/sbin/ulogd -c /etc/ulogd.conf &
     ULOGD_PID=$!
 
     # Даём ulogd2 время запуститься
