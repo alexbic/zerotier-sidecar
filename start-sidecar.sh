@@ -8,6 +8,7 @@ GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
 FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
 DEBUG_IPTABLES=${DEBUG_IPTABLES:-"false"}  # Enable comprehensive iptables logging for debugging
+LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Enable connection logging output to console
 
 # Simple resolver: use getent (NSS: /etc/hosts + Docker DNS + DNS) then ping as fallback.
 resolve_name_to_ip() {
@@ -1217,6 +1218,27 @@ start_ulogd() {
     fi
 }
 
+# Функция вывода логов подключений в консоль
+tail_connection_logs() {
+    # Ждём пока файл логов появится
+    local max_wait=10
+    local waited=0
+    while [ ! -f "$CONNECTION_LOG" ] && [ $waited -lt $max_wait ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if [ -f "$CONNECTION_LOG" ]; then
+        echo "📡 Connection logging to console enabled"
+        # Используем tail -F (follow with retry) для отслеживания ротаций логов
+        tail -F "$CONNECTION_LOG" 2>/dev/null &
+        TAIL_PID=$!
+        echo "  - Tail process: PID $TAIL_PID"
+    else
+        echo "⚠️  Connection log file not found: $CONNECTION_LOG"
+    fi
+}
+
 # Запускаем ulogd2 для логирования подключений
 start_ulogd
 
@@ -1232,6 +1254,16 @@ if [ -n "$RESOLVED_FORWARDS" ]; then
     log_message "INFO" "Service monitor started (PID: $MONITOR_PID)"
 else
     echo "ℹ️  Service monitor not started (no port forwards configured)"
+fi
+
+# Запускаем вывод логов подключений в консоль если включено
+if [ "$LOG_CONNECTIONS" = "true" ]; then
+    log_message "INFO" "Enabling connection logs output to console..."
+    tail_connection_logs
+    echo "  - To disable: set LOG_CONNECTIONS=false"
+else
+    echo "ℹ️  Connection logs output to console disabled"
+    echo "  - To enable: set LOG_CONNECTIONS=true in .env"
 fi
 
 echo "===================================="
