@@ -7,8 +7,7 @@ PORT_FORWARD=${PORT_FORWARD:-""}
 GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
 FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
-DEBUG_IPTABLES=${DEBUG_IPTABLES:-"false"}  # Enable comprehensive iptables logging for debugging
-LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Enable connection logging output to console
+LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Connection logging: false (disabled), simple (connections only), full (connections + iptables debug)
 
 # Ассоциативный массив для хранения маппинга IP -> оригинальное имя контейнера
 declare -A IP_TO_NAME_MAP
@@ -288,10 +287,10 @@ add_connection_logging() {
 
 # Функция для полного отладочного логирования ВСЕХ iptables цепочек
 # Используется для диагностики сетевых проблем
-# Включается через переменную DEBUG_IPTABLES=true
+# Включается автоматически когда LOG_CONNECTIONS=full
 add_debug_logging() {
     echo ""
-    echo "🔍 DEBUG MODE: Adding comprehensive iptables logging..."
+    echo "🔍 FULL LOGGING MODE: Adding comprehensive iptables logging..."
     echo "⚠️  WARNING: This will generate A LOT of log entries!"
     echo ""
 
@@ -930,8 +929,8 @@ if [ -n "$RESOLVED_FORWARDS" ]; then
     echo "✓ Connection logging rules added ($(echo ${#PORTS_ARRAY[@]}) ports)"
 fi
 
-# Добавляем полное отладочное логирование если DEBUG_IPTABLES=true
-if [ "$DEBUG_IPTABLES" = "true" ]; then
+# Добавляем полное отладочное логирование iptables правил если LOG_CONNECTIONS=full
+if [ "$LOG_CONNECTIONS" = "full" ]; then
     add_debug_logging
 fi
 
