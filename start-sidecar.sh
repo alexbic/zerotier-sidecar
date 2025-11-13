@@ -1283,7 +1283,7 @@ tail_connection_logs() {
                     if (src && dst && dpt) {
                         # Проверяем есть ли имя для destination IP
                         dst_display = dst
-                        if (dst in ip_to_name) {
+                        if (dst in ip_to_name && ip_to_name[dst] != dst) {
                             dst_display = dst " (" ip_to_name[dst] ")"
                         }
 
