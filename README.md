@@ -225,6 +225,7 @@ Notes:
 | `ALLOWED_SOURCES` | ❌ | Allowed source IPs | `any` | `203.0.113.0/24,10.0.0.0/8` |
 | `FORCE_ZEROTIER_ROUTES` | ❌ | Custom ZeroTier routes | - | `192.168.1.0/24:10.121.15.50` |
 | `LOG_CONNECTIONS` | ❌ | Connection logging mode | `false` | `off`, `simple`, `full` |
+| `IP_NAME_MAP` | ❌ | Manual IP to name mapping | - | `10.121.15.16:sonarr,192.168.88.5:hass` |
 
 ### Operation Modes
 
