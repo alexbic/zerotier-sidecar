@@ -1,4 +1,4 @@
-# 🌐 ZeroTier Sidecar Gateway v2.0
+# 🌐 ZeroTier Sidecar Gateway v2.2
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/alexbic/zerotier-sidecar)](https://hub.docker.com/r/alexbic/zerotier-sidecar)
 [![Docker Image Size](https://img.shields.io/docker/image-size/alexbic/zerotier-sidecar/latest)](https://hub.docker.com/r/alexbic/zerotier-sidecar)
@@ -54,11 +54,13 @@ docker pull ghcr.io/alexbic/zerotier-sidecar:latest
 - **🔒 Source Filtering**: IP-based access control
 - **📊 Real-time Monitoring**: Detailed logging and configuration tracking
 
-### Monitoring & Reliability (NEW in v2.1.4!)
-- **📝 Comprehensive Logging**: Service monitoring and connection tracking logs
+### Monitoring & Reliability (Enhanced in v2.2.0!)
+- **📺 Real-time Connection Logs**: Live monitoring in `docker logs` with service name resolution
+- **🎚️ Flexible Logging Modes**: off/simple/full - choose output level for your needs
 - **🔄 Auto-Recovery**: Automatic restoration of missing iptables/socat rules
 - **💚 Health Checks**: Continuous service availability monitoring (every 30s)
-- **📊 Container Name Display**: Shows original container names in logs
+- **📊 Service Name Mapping**: Displays container names alongside IPs (`rsync-server (172.22.0.3)`)
+- **📝 Original Config Display**: Shows user-configured names in port forwarding output
 - **🔁 Log Rotation**: Automatic rotation (10MB limit, 5 historical files)
 - **⚠️ State Tracking**: Detects and logs service state changes
 
@@ -222,6 +224,7 @@ Notes:
 | `GATEWAY_MODE` | ❌ | Operation mode | `false` | `false`, `true`, `hybrid` |
 | `ALLOWED_SOURCES` | ❌ | Allowed source IPs | `any` | `203.0.113.0/24,10.0.0.0/8` |
 | `FORCE_ZEROTIER_ROUTES` | ❌ | Custom ZeroTier routes | - | `192.168.1.0/24:10.121.15.50` |
+| `LOG_CONNECTIONS` | ❌ | Connection logging mode | `false` | `off`, `simple`, `full` |
 
 ### Operation Modes
 
@@ -413,9 +416,40 @@ server {
 
 ## 📊 Monitoring and Troubleshooting
 
-### Logging System (NEW in v2.1.4!)
+### Logging System (Enhanced in v2.2.0!)
 
-ZeroTier Sidecar includes comprehensive logging for monitoring service health and tracking connections:
+ZeroTier Sidecar includes comprehensive logging for monitoring service health and tracking connections.
+
+#### Connection Logging Modes (NEW in v2.2.0!)
+
+Control connection logging output with the `LOG_CONNECTIONS` environment variable:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `off` / `false` | No connection logs in console | Production (minimal output) |
+| `simple` | Connection logs with service names | Standard monitoring |
+| `full` | Connections + iptables debug logs | Troubleshooting & debugging |
+
+**Examples:**
+```yaml
+environment:
+  - LOG_CONNECTIONS=simple  # Show connections: "10.121.15.69 → 172.22.0.3 (rsync-server):873"
+  - LOG_CONNECTIONS=full    # Show connections + detailed iptables rule matching
+  - LOG_CONNECTIONS=off     # Disable console output (logs still saved to file)
+```
+
+**Simple Mode Output** (recommended for production):
+```
+[Nov 13 01:15:42] 10.121.15.69 → 172.22.0.3 (rsync-server):873
+[Nov 13 01:16:20] 192.168.1.100 → 10.121.15.16 (sonarr):8989
+```
+
+**Full Mode Output** (for troubleshooting):
+```
+[Nov 13 01:15:42] 10.121.15.69 → 172.22.0.3 (rsync-server):873
+[DBG-FORWARD] IN=zthbm5kwdx OUT=docker0 SRC=10.121.15.69 DST=172.22.0.3 PROTO=TCP DPT=873
+[DBG-NAT-PREROUTING] IN=zthbm5kwdx SRC=10.121.15.69 DST=10.121.15.15 PROTO=TCP DPT=873
+```
 
 #### Log Files
 
@@ -428,7 +462,10 @@ All logs are stored in `/var/log/zerotier-sidecar/` inside the container:
 
 #### Log Features
 
-- **🔍 Container Name Display**: Shows original container names (e.g., `rsync-server (172.22.0.3)`)
+- **🔍 Service Name Mapping** (NEW in v2.2.0): Displays container names in logs (`172.22.0.3 (rsync-server):873`)
+- **📺 Real-time Console Output** (NEW in v2.2.0): Connection logs visible in `docker logs` with `LOG_CONNECTIONS=simple`
+- **🎚️ Flexible Logging Levels** (NEW in v2.2.0): Three modes - off/simple/full for different use cases
+- **📝 Original Config Display** (NEW in v2.2.0): Shows user-configured names, not resolved IPs
 - **🔄 Automatic Log Rotation**: Max 10MB per file, keeps 5 historical files
 - **⏱️ Timestamped Events**: All events include precise timestamps
 - **📊 Health Checks**: Periodic status reports every 5 minutes

@@ -8,9 +8,26 @@ GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
 FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
 LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Connection logging: false|off (disabled), simple (connections only), full (connections + iptables debug)
+IP_NAME_MAP=${IP_NAME_MAP:-""}  # Manual IP to name mapping: IP1:name1,IP2:name2
 
 # Ассоциативный массив для хранения маппинга IP -> оригинальное имя контейнера
 declare -A IP_TO_NAME_MAP
+
+# Парсим ручные маппинги IP -> имя из IP_NAME_MAP (если указаны)
+if [ -n "$IP_NAME_MAP" ]; then
+    echo "Loading manual IP to name mappings..."
+    IFS=',' read -ra MAPPINGS <<< "$IP_NAME_MAP"
+    for mapping in "${MAPPINGS[@]}"; do
+        IFS=':' read -ra PARTS <<< "$mapping"
+        MAP_IP="${PARTS[0]}"
+        MAP_NAME="${PARTS[1]}"
+
+        if [ -n "$MAP_IP" ] && [ -n "$MAP_NAME" ]; then
+            IP_TO_NAME_MAP["$MAP_IP"]="$MAP_NAME"
+            echo "  ✓ Mapped $MAP_IP -> $MAP_NAME"
+        fi
+    done
+fi
 
 # Simple resolver: use getent (NSS: /etc/hosts + Docker DNS + DNS) then ping as fallback.
 resolve_name_to_ip() {
@@ -22,6 +39,14 @@ resolve_name_to_ip() {
         echo "$name"
         return 0
     fi
+
+    # Check manual IP_NAME_MAP first (reverse lookup: name -> IP)
+    for ip in "${!IP_TO_NAME_MAP[@]}"; do
+        if [ "${IP_TO_NAME_MAP[$ip]}" = "$name" ]; then
+            echo "$ip"
+            return 0
+        fi
+    done
 
     # Try getent first (uses NSS which includes Docker DNS)
     if command -v getent >/dev/null 2>&1; then
