@@ -78,6 +78,9 @@ if [ -n "$FORCE_ZEROTIER_ROUTES" ]; then
     echo "Custom routes: $FORCE_ZEROTIER_ROUTES"
 fi
 
+# Сохраняем оригинальное значение PORT_FORWARD для отображения в логах
+PORT_FORWARD_DISPLAY="$PORT_FORWARD"
+
 # Pre-resolve any container/service names in PORT_FORWARD before we start
 # ZeroTier. Docker embedded DNS (127.0.0.11) can stop responding after we
 # change network namespaces, so try to resolve names early and replace them
@@ -817,7 +820,8 @@ cat > /tmp/zt-sidecar/config.json << EOF
   "zerotier_ip": "$ZT_IP",
   "zerotier_interface": "$ZT_IF",
   "network": "$ZT_NETWORK",
-  "port_forwarding": "$PORT_FORWARD",
+  "port_forwarding_config": "$PORT_FORWARD_DISPLAY",
+  "port_forwarding_resolved": "$PORT_FORWARD",
   "allowed_sources": "$ALLOWED_SOURCES",
   "custom_routes": "$FORCE_ZEROTIER_ROUTES",
   "timestamp": "$(date -Iseconds)"
@@ -828,7 +832,7 @@ echo "=== ZeroTier Sidecar Ready ==="
 echo "Mode: $GATEWAY_MODE"
 echo "ZeroTier IP: $ZT_IP"
 echo "Interface: $ZT_IF"
-echo "Port forwarding: $PORT_FORWARD"
+echo "Port forwarding: $PORT_FORWARD_DISPLAY"
 echo "Allowed sources: $ALLOWED_SOURCES"
 if [ -n "$FORCE_ZEROTIER_ROUTES" ]; then
     echo "Custom routes: $FORCE_ZEROTIER_ROUTES"
