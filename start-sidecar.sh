@@ -1291,7 +1291,7 @@ tail_connection_logs() {
                         fflush()
                     }
                 }
-            ' &
+            ' | while IFS= read -r line; do echo "$line"; done &
             TAIL_PID=$!
             echo "  - Tail process: PID $TAIL_PID"
         else
@@ -1299,7 +1299,7 @@ tail_connection_logs() {
             echo "📡 Connection logging to console enabled (full format)"
             echo "  - Format: Complete NFLOG details"
             # Используем tail -F (follow with retry) для отслеживания ротаций логов
-            tail -F "$CONNECTION_LOG" 2>/dev/null &
+            tail -F "$CONNECTION_LOG" 2>/dev/null | while IFS= read -r line; do echo "$line"; done &
             TAIL_PID=$!
             echo "  - Tail process: PID $TAIL_PID"
         fi
