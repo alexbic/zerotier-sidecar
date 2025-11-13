@@ -7,7 +7,7 @@ PORT_FORWARD=${PORT_FORWARD:-""}
 GATEWAY_MODE=${GATEWAY_MODE:-"false"}
 ALLOWED_SOURCES=${ALLOWED_SOURCES:-"any"}
 FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
-LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Connection logging: false (disabled), simple (connections only), full (connections + iptables debug)
+LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Connection logging: false|off (disabled), simple (connections only), full (connections + iptables debug)
 
 # Ассоциативный массив для хранения маппинга IP -> оригинальное имя контейнера
 declare -A IP_TO_NAME_MAP
@@ -1338,18 +1338,18 @@ fi
 if [ "$LOG_CONNECTIONS" = "simple" ] || [ "$LOG_CONNECTIONS" = "full" ]; then
     log_message "INFO" "Enabling connection logs output to console (mode: $LOG_CONNECTIONS)..."
     tail_connection_logs "$LOG_CONNECTIONS"
-    echo "  - To disable: set LOG_CONNECTIONS=false"
+    echo "  - To disable: set LOG_CONNECTIONS=off"
     echo "  - To change format: set LOG_CONNECTIONS=simple or LOG_CONNECTIONS=full"
 elif [ "$LOG_CONNECTIONS" = "true" ]; then
     # Backward compatibility: true = simple mode
     log_message "INFO" "Enabling connection logs output to console (mode: simple - legacy)..."
     tail_connection_logs "simple"
-    echo "  - To disable: set LOG_CONNECTIONS=false"
+    echo "  - To disable: set LOG_CONNECTIONS=off"
     echo "  - To change format: set LOG_CONNECTIONS=simple or LOG_CONNECTIONS=full"
 else
     echo "ℹ️  Connection logs output to console disabled"
-    echo "  - To enable simplified format: set LOG_CONNECTIONS=simple in .env"
-    echo "  - To enable full format: set LOG_CONNECTIONS=full in .env"
+    echo "  - To enable simplified format: set LOG_CONNECTIONS=simple"
+    echo "  - To enable full format: set LOG_CONNECTIONS=full"
 fi
 
 echo "===================================="
