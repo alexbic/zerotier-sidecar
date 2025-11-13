@@ -38,3 +38,4 @@ logs/
 changes.txt
 *.diff
 *.patch
+.claude.md
