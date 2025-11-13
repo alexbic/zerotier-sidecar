@@ -10,6 +10,9 @@ FORCE_ZEROTIER_ROUTES=${FORCE_ZEROTIER_ROUTES:-""}
 DEBUG_IPTABLES=${DEBUG_IPTABLES:-"false"}  # Enable comprehensive iptables logging for debugging
 LOG_CONNECTIONS=${LOG_CONNECTIONS:-"false"}  # Enable connection logging output to console
 
+# Ассоциативный массив для хранения маппинга IP -> оригинальное имя контейнера
+declare -A IP_TO_NAME_MAP
+
 # Simple resolver: use getent (NSS: /etc/hosts + Docker DNS + DNS) then ping as fallback.
 resolve_name_to_ip() {
     local name="$1"
@@ -141,6 +144,8 @@ pre_resolve_port_forward() {
         while [ $resolve_attempt -lt 3 ]; do
             if ipaddr=$(resolve_name_to_ip "$DST"); then
                 echo "(pre-resolve) $DST -> $ipaddr"
+                # Сохраняем маппинг IP -> оригинальное имя для логирования
+                IP_TO_NAME_MAP["$ipaddr"]="$DST"
                 new_forwards+="$EXT:$ipaddr:$DPT,"
                 break
             fi
@@ -647,8 +652,7 @@ echo "======================="
 echo ""
 
 # Настройка правил для проброса портов — сначала один раз резолвим имена
-# Создаём ассоциативный массив для хранения маппинга IP -> оригинальное имя
-declare -A IP_TO_NAME_MAP
+# Массив IP_TO_NAME_MAP уже объявлен в начале файла
 
 if [ -n "$PORT_FORWARD" ]; then
     echo "Resolving port forwarding destinations..."
@@ -671,8 +675,10 @@ if [ -n "$PORT_FORWARD" ]; then
             echo "Attempting to resolve '$RAW_DEST' (attempt $((retry_attempt+1))/3)..."
             if RESOLVED_IP=$(resolve_name_to_ip "$RAW_DEST"); then
                 echo "✓ Resolved $RAW_DEST -> $RESOLVED_IP"
-                # Сохраняем маппинг IP -> имя для логирования
-                IP_TO_NAME_MAP["$RESOLVED_IP"]="$RAW_DEST"
+                # Сохраняем маппинг IP -> имя для логирования (только если это не IP)
+                if ! [[ "$RAW_DEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    IP_TO_NAME_MAP["$RESOLVED_IP"]="$RAW_DEST"
+                fi
                 RESOLVED_FORWARDS+="${EXT_PORT}:${RESOLVED_IP}:${DEST_PORT},"
                 break
             fi
